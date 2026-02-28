@@ -961,7 +961,7 @@ fn draw(
         .split(area);
 
     // ── tab bar ──
-    let mut titles: Vec<Line> = vec![Line::from(Span::raw("Threads"))];
+    let mut titles: Vec<Line> = vec![Line::from(Span::raw("Brew"))];
     for e in &app.emails {
         titles.push(Line::from(truncate(&e.title, 20)));
     }
@@ -1020,7 +1020,7 @@ fn draw_list(
         .map(|l| ListItem::new(Line::from(Span::raw(l.to_string()))))
         .collect();
     let mb_list = List::new(mb_items)
-        .block(Block::default().borders(Borders::ALL).title(" Mailboxes "))
+        .block(Block::default().borders(Borders::ALL).title(" Mailbox "))
         .highlight_style(
             Style::default()
                 .fg(Color::Yellow)
