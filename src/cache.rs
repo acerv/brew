@@ -1,23 +1,27 @@
 use anyhow::Result;
+use mail_parser::MessageParser;
 use mail_parser::mailbox::maildir::MessageIterator;
-use mail_parser::{Message, MessageParser};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-type OwnedMessage = Message<'static>;
+#[derive(Debug, PartialEq)]
+pub struct EmailMeta {
+    pub message_id: String,
+    pub subject: String,
+}
 
 #[derive(Debug, PartialEq)]
 pub struct EmailThread {
-    data: Rc<OwnedMessage>,
-    replies: RefCell<Vec<Rc<EmailThread>>>,
+    pub data: EmailMeta,
+    pub replies: RefCell<Vec<Rc<EmailThread>>>,
 }
 
 impl EmailThread {
-    pub fn new(m: &Rc<OwnedMessage>) -> Self {
+    fn new(meta: EmailMeta) -> Self {
         Self {
-            data: m.clone(),
+            data: meta,
             replies: RefCell::new(Vec::new()),
         }
     }
@@ -86,69 +90,67 @@ pub fn build_threads(dir: &str) -> Result<Vec<Rc<EmailThread>>> {
     let mut threads: Vec<Rc<EmailThread>> = Vec::new();
 
     for msg in MessageIterator::new(PathBuf::from(dir))? {
-        if let Some(content) = MessageParser::default().parse(msg?.contents()) {
-            let email: Rc<OwnedMessage> = Rc::new(content.into_owned());
-            let thread = Rc::new(EmailThread::new(&email));
-            let header = email.in_reply_to();
+        let content = msg?;
+        // Parse only headers — skip body decoding entirely.
+        let parsed = match MessageParser::default().parse_headers(content.contents()) {
+            Some(p) => p,
+            None => continue,
+        };
 
-            if header.is_empty() || header.as_text().is_none() {
-                threads.push(thread.clone());
+        // Skip emails without a Message-ID; they can't be threaded.
+        let id = match parsed.message_id() {
+            Some(id) => id.to_string(),
+            None => continue,
+        };
+
+        let meta = EmailMeta {
+            message_id: id.clone(),
+            subject: parsed.subject().unwrap_or_default().to_string(),
+        };
+
+        let thread = Rc::new(EmailThread::new(meta));
+
+        // Step 2: link to parent or queue for later.
+        if let Some(reply_to_id) = parsed.in_reply_to().as_text() {
+            let reply_to_id = reply_to_id.to_string();
+            if let Some(parent) = lookup.get(&reply_to_id) {
+                // Parent already seen — attach directly.
+                parent.replies.borrow_mut().push(thread.clone());
             } else {
-                let reply_to_id = header.as_text().unwrap().to_string();
-
-                if let Some(parent) = lookup.get_mut(&reply_to_id) {
-                    // if we already encountered the parent, we just add this
-                    // email to its children
-                    parent.replies.borrow_mut().push(thread.clone());
-                } else {
-                    if let Some(queue) = searching.get_mut(&reply_to_id) {
-                        // someone is already searching for our parent, so we
-                        // add this email to the queue
-                        queue.push(thread.clone());
-                    } else {
-                        // this is the first time we are searching for the parent.
-                        // create the list of children searching for it
-                        searching.insert(reply_to_id.clone(), vec![thread.clone()]);
-                    }
-                }
+                // Parent not yet seen — queue under its ID.
+                searching
+                    .entry(reply_to_id)
+                    .or_default()
+                    .push(thread.clone());
             }
-
-            let id = email.message_id().expect("Empty message ID");
-
-            if let Some(children) = searching.get_mut(id) {
-                // we found a list of children searching for our email, so we add
-                // them to the email's children list
-                children
-                    .into_iter()
-                    .for_each(|c| thread.replies.borrow_mut().push(c.clone()));
-
-                // remove this email from the list
-                searching.remove_entry(id);
-            }
-
-            // save the email inside our emails hash lookup
-            lookup.insert(id.to_string(), thread.clone());
+        } else {
+            // No In-Reply-To — this is a root thread.
+            threads.push(thread.clone());
         }
+
+        // Step 3: attach any children that were queued waiting for us.
+        if let Some(children) = searching.remove(&id) {
+            thread.replies.borrow_mut().extend(children);
+        }
+
+        // Step 4: register this message.
+        lookup.insert(id, thread);
     }
 
-    // leftover emails without parents will be considered parents
-    searching
-        .into_iter()
-        .for_each(|(_, k)| k.into_iter().for_each(|i| threads.push(i)));
+    // Orphaned emails (parent never found) become root threads.
+    for (_, orphans) in searching {
+        threads.extend(orphans);
+    }
 
     Ok(threads)
 }
 
-fn print_threads(counter: usize, thread: &Rc<EmailThread>) {
-    println!(
-        "{}{}{}",
-        " ".repeat(2 * counter),
-        if counter > 0 { "` " } else { "" },
-        thread.data.subject().unwrap_or_default()
-    );
-
-    for t in thread.replies.borrow().iter() {
-        print_threads(counter + 1, &t);
+#[cfg(test)]
+fn print_threads(prefix: &str, thread: &EmailThread) {
+    println!("{}{}", prefix, thread.data.subject);
+    let child_prefix = format!("{}  ` ", prefix);
+    for child in thread.replies.borrow().iter() {
+        print_threads(&child_prefix, child);
     }
 }
 
@@ -162,9 +164,8 @@ mod tests {
     fn test_build_threads() {
         let threads = build_threads("/home/acer/Mail/LTP/").unwrap();
         for t in threads.iter() {
-            print_threads(0 as usize, &t);
+            print_threads("", t);
         }
-
         dbg!(threads.len());
     }
 }
