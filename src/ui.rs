@@ -475,11 +475,17 @@ fn reply(
         return Ok(());
     }
 
-    // Replace the "--\n" separator with a blank line to produce a valid
-    // RFC 2822 message (headers \n\n body) that sendmail -t understands.
-    let message = edited.replacen("--\n", "\n", 1);
+    // Find the first line that is exactly "--" and take everything after it.
+    // Uses a line-by-line search so it works regardless of line endings.
+    let body = edited
+        .lines()
+        .enumerate()
+        .find(|(_, l)| *l == "--")
+        .map(|(i, _)| edited.lines().skip(i + 1).collect::<Vec<_>>().join("\n"))
+        .unwrap_or_else(|| edited.clone());
+    let body = body.trim_start_matches('\n');
 
-    if let Err(e) = send_message(smtp, &message) {
+    if let Err(e) = send_message(smtp, to, &subject, &body) {
         show_error(&e.to_string(), terminal)?;
     }
 
@@ -550,49 +556,24 @@ fn thanks_reply(
         return Ok(());
     }
 
-    let message = edited.replacen("--\n", "\n", 1);
+    let body = edited
+        .lines()
+        .enumerate()
+        .find(|(_, l)| *l == "--")
+        .map(|(i, _)| edited.lines().skip(i + 1).collect::<Vec<_>>().join("\n"))
+        .unwrap_or_else(|| edited.clone());
+    let body = body.trim_start_matches('\n');
 
-    if let Err(e) = send_message(smtp, &message) {
+    if let Err(e) = send_message(smtp, &to, &subject, &body) {
         show_error(&e.to_string(), terminal)?;
     }
 
     Ok(())
 }
 
-/// Send a raw RFC 2822 message via SMTP using lettre.
-///
-/// Parses `To:` and `Subject:` from the raw text, builds a lettre `Message`,
-/// and delivers it via authenticated SMTP with TLS.
-fn send_message(smtp: &Smtp, raw: &str) -> Result<()> {
+/// Send a message via SMTP using lettre.
+fn send_message(smtp: &Smtp, to: &str, subject: &str, body: &str) -> Result<()> {
     use anyhow::anyhow;
-
-    // Extract headers from the raw message text.
-    let mut to_addr = String::new();
-    let mut subject = String::new();
-    let mut in_headers = true;
-    let mut body_start = 0usize;
-
-    for line in raw.lines() {
-        if in_headers && line.is_empty() {
-            in_headers = false;
-        }
-        if in_headers {
-            if let Some(val) = line.strip_prefix("To:") {
-                to_addr = val.trim().to_string();
-            } else if let Some(val) = line.strip_prefix("Subject:") {
-                subject = val.trim().to_string();
-            }
-        }
-    }
-    // body is everything after the first blank line
-    if let Some(pos) = raw.find("\n\n") {
-        body_start = pos + 2;
-    }
-    let body = &raw[body_start..];
-
-    if to_addr.is_empty() {
-        return Err(anyhow!("No To: header found in message"));
-    }
 
     let email = Message::builder()
         .from(
@@ -600,10 +581,8 @@ fn send_message(smtp: &Smtp, raw: &str) -> Result<()> {
                 .parse()
                 .map_err(|e| anyhow!("invalid From address: {e}"))?,
         )
-        .to(to_addr
-            .parse()
-            .map_err(|e| anyhow!("invalid To address: {e}"))?)
-        .subject(&subject)
+        .to(to.parse().map_err(|e| anyhow!("invalid To address: {e}"))?)
+        .subject(subject)
         .header(ContentType::TEXT_PLAIN)
         .body(body.to_string())
         .map_err(|e| anyhow!("failed to build message: {e}"))?;
