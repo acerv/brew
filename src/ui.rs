@@ -1,7 +1,7 @@
 use crate::cache::{EmailMeta, EmailThread, MailCache};
-use crate::read::{is_unread, mark_seen};
 use crate::config::Mailbox;
 use crate::config::{Smtp, load_signature, load_thanks};
+use crate::read::{is_unread, mark_seen};
 use anyhow::Result;
 use crossterm::{
     event::{self, Event, KeyCode, KeyModifiers},
@@ -290,6 +290,20 @@ impl App {
     /// Move thread selection to first thread.
     fn thread_home(&mut self) {
         self.thread_list_states[self.selected_mailbox].select(Some(0));
+    }
+
+    /// Jump thread selection by `delta` rows (positive = down, negative = up),
+    /// clamped to the valid range.
+    fn thread_skip(&mut self, mailbox_entries: &[Vec<Entry>], delta: isize) {
+        let len = mailbox_entries[self.selected_mailbox].len();
+        if len == 0 {
+            return;
+        }
+        let cur = self.thread_list_states[self.selected_mailbox]
+            .selected()
+            .unwrap_or(0) as isize;
+        let next = (cur + delta).clamp(0, len as isize - 1) as usize;
+        self.thread_list_states[self.selected_mailbox].select(Some(next));
     }
 
     /// Move thread selection to last thread.
@@ -815,6 +829,14 @@ fn run_loop(
                     KeyCode::Char('k') | KeyCode::Up => app.thread_up(),
                     KeyCode::Home => app.thread_home(),
                     KeyCode::End => app.thread_end(&mailbox_entries),
+                    KeyCode::PageDown => app.thread_skip(&mailbox_entries, 15),
+                    KeyCode::PageUp => app.thread_skip(&mailbox_entries, -15),
+                    KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        app.thread_skip(&mailbox_entries, 15);
+                    }
+                    KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        app.thread_skip(&mailbox_entries, -15);
+                    }
                     // J/K switch mailbox.
                     KeyCode::Char('J') => app.mailbox_down(labels.len()),
                     KeyCode::Char('K') => app.mailbox_up(),
@@ -1039,7 +1061,9 @@ fn draw_list(
             let (text, style) = if unread > 0 {
                 (
                     format!("{} ({})", label, unread),
-                    Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
                 )
             } else {
                 (label.to_string(), Style::default())
@@ -1074,7 +1098,9 @@ fn draw_list(
                 e.thread.data.subject.clone()
             };
             let subject_style = if is_unread(&e.thread.data.path) {
-                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
