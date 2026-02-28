@@ -259,14 +259,15 @@ fn bare_address(s: &str) -> &str {
     s.trim()
 }
 
-/// Build a reply draft, open vim, then send the edited result via sendmail.
+/// Build a reply draft, open vim, ask for confirmation, then send via sendmail.
 ///
-/// TUI is suspended for the duration so vim has full terminal control.
+/// `quote` — when true the original body is included quoted with "> ".
+/// TUI is suspended while vim has the terminal, then restored for the dialog.
 fn reply(
     tab: &EmailTab,
+    quote: bool,
     terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>,
 ) -> Result<()> {
-    // Build the draft text.
     let to = bare_address(&tab.from);
     let subject = if tab.title.starts_with("Re:") || tab.title.starts_with("re:") {
         tab.title.clone()
@@ -274,35 +275,51 @@ fn reply(
         format!("Re: {}", tab.title)
     };
 
+    // Build the editor draft:
+    //   <headers>
+    //   --
+    //   <blank line — user types reply here>
+    //   <optional quoted body>
+    //
+    // The "--" is a visible separator in the editor only; before sending it is
+    // replaced with a blank line to produce a valid RFC 2822 message.
+    let mut header_count = 2usize; // To + Subject
     let mut draft = String::new();
     draft.push_str(&format!("To: {}\n", to));
     draft.push_str(&format!("Subject: {}\n", subject));
     if let Some(ref mid) = tab.message_id {
         draft.push_str(&format!("In-Reply-To: <{}>\n", mid));
+        header_count += 1;
     }
-    draft.push_str("--\n\n"); // blank line separates headers from body in the editor
-
-    // Quote the original body.
-    for line in tab.body.lines() {
-        draft.push_str(&format!("> {}\n", line));
+    draft.push_str("--\n"); // visible separator
+    draft.push('\n'); // blank reply line — cursor lands here
+    if quote {
+        for line in tab.body.lines() {
+            draft.push_str(&format!("> {}\n", line));
+        }
     }
 
-    // Write draft to a named temp file so vim can open it.
+    // Write to a temp file.
     let tmp_path = std::env::temp_dir().join(format!("mail-reply-{}.eml", std::process::id()));
     {
         let mut f = std::fs::File::create(&tmp_path)?;
         f.write_all(draft.as_bytes())?;
     }
 
-    // Suspend TUI.
+    // Suspend TUI, open vim with cursor on the blank reply line.
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
 
-    // Open vim.
     let editor = std::env::var("VISUAL")
         .or_else(|_| std::env::var("EDITOR"))
         .unwrap_or_else(|_| "vim".to_string());
-    Command::new(&editor).arg(&tmp_path).status()?;
+
+    // cursor on the blank reply line: header_count + "--" line + blank line (1-based)
+    let reply_line = header_count + 2;
+    Command::new(&editor)
+        .arg(format!("+{}", reply_line))
+        .arg(&tmp_path)
+        .status()?;
 
     // Read back the edited file.
     let edited = std::fs::read_to_string(&tmp_path)?;
@@ -313,31 +330,26 @@ fn reply(
     execute!(terminal.backend_mut(), EnterAlternateScreen)?;
     terminal.clear()?;
 
-    // Ask the user whether to send.
+    // Ask for confirmation before sending.
     if !confirm_send(terminal)? {
         return Ok(());
     }
 
-    // Split at the "--" separator: everything before is headers, after is body.
-    // If the user deleted the separator, treat the whole file as the message.
-    let message = if let Some(sep) = edited.find("\n--\n") {
-        let headers = edited[..sep].trim();
-        let body = edited[sep + 4..].trim();
-        format!("{}\n\n{}\n", headers, body)
-    } else {
-        edited.trim().to_string() + "\n"
-    };
+    // Replace the "--\n" separator with a blank line to produce a valid
+    // RFC 2822 message (headers \n\n body) that sendmail -t understands.
+    let message = edited.replacen("--\n", "\n", 1);
 
-    // Send via sendmail -t (reads To:/Cc:/Bcc: from the message headers).
+    // Send via sendmail -t (reads recipients from To:/Cc:/Bcc: headers).
     let sendmail = std::env::var("SENDMAIL").unwrap_or_else(|_| "sendmail".to_string());
     let mut child = Command::new(&sendmail)
         .arg("-t")
         .stdin(std::process::Stdio::piped())
         .spawn()?;
-    if let Some(stdin) = child.stdin.take() {
-        let mut stdin = stdin;
+
+    if let Some(mut stdin) = child.stdin.take() {
         stdin.write_all(message.as_bytes())?;
     }
+
     child.wait()?;
 
     Ok(())
@@ -464,9 +476,12 @@ fn run_loop(
                     KeyCode::Char('q') => app.close_active(),
                     KeyCode::Esc => app.active = 0,
 
-                    // Reply: open vim with a prefilled draft, send on exit.
+                    // r → reply quoting original body; R → reply with empty body.
                     KeyCode::Char('r') => {
-                        let _ = reply(&app.emails[ei], terminal);
+                        let _ = reply(&app.emails[ei], true, terminal);
+                    }
+                    KeyCode::Char('R') => {
+                        let _ = reply(&app.emails[ei], false, terminal);
                     }
 
                     // Navigate to previous email in the list, replacing this tab.
@@ -581,7 +596,7 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App, entries: &[Entry]) {
         let ei = app.active - 1;
         draw_email(frame, &mut app.emails[ei], chunks[1]);
         let status = Paragraph::new(
-            " j/k ↑/↓ scroll  h/l ←/→ switch tabs  J/K select email  r reply  Esc back  q close",
+            " j/k ↑/↓ scroll  h/l ←/→ switch tabs  J/K select email  r reply  R reply-empty  Esc back  q close",
         )
         .style(Style::default().fg(Color::DarkGray));
         frame.render_widget(status, chunks[2]);
