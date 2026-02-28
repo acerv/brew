@@ -434,7 +434,9 @@ fn reply(
     // RFC 2822 message (headers \n\n body) that sendmail -t understands.
     let message = edited.replacen("--\n", "\n", 1);
 
-    send_message(smtp, &message)?;
+    if let Err(e) = send_message(smtp, &message) {
+        show_error(&e.to_string(), terminal)?;
+    }
 
     Ok(())
 }
@@ -505,7 +507,9 @@ fn thanks_reply(
 
     let message = edited.replacen("--\n", "\n", 1);
 
-    send_message(smtp, &message)?;
+    if let Err(e) = send_message(smtp, &message) {
+        show_error(&e.to_string(), terminal)?;
+    }
 
     Ok(())
 }
@@ -560,7 +564,7 @@ fn send_message(smtp: &Smtp, raw: &str) -> Result<()> {
         .map_err(|e| anyhow!("failed to build message: {e}"))?;
 
     let creds = Credentials::new(smtp.username.clone(), smtp.password.clone());
-    let transport = SmtpTransport::relay(&smtp.host)
+    let transport = SmtpTransport::starttls_relay(&smtp.host)
         .map_err(|e| anyhow!("SMTP relay error: {e}"))?
         .port(smtp.port)
         .credentials(creds)
@@ -571,6 +575,68 @@ fn send_message(smtp: &Smtp, raw: &str) -> Result<()> {
         .map_err(|e| anyhow!("SMTP send error: {e}"))?;
 
     Ok(())
+}
+
+/// Show a centred error dialog with `msg` and wait for any key to dismiss.
+fn show_error(
+    msg: &str,
+    terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>,
+) -> Result<()> {
+    // Wrap the message into lines of at most 38 chars (fits inside a 42-wide popup).
+    const MAX_W: usize = 58;
+    let mut wrapped: Vec<String> = Vec::new();
+    for word in msg.split_whitespace() {
+        match wrapped.last_mut() {
+            Some(last) if last.len() + 1 + word.len() <= MAX_W => {
+                last.push(' ');
+                last.push_str(word);
+            }
+            _ => wrapped.push(word.to_string()),
+        }
+    }
+    if wrapped.is_empty() {
+        wrapped.push(String::new());
+    }
+
+    // popup: 42 wide, wrapped lines + top/bottom border + 1 blank + 1 hint
+    let popup_w: u16 = 68;
+    let popup_h: u16 = (wrapped.len() + 4) as u16;
+
+    loop {
+        let lines_clone = wrapped.clone();
+        terminal.draw(move |frame| {
+            let area = frame.area();
+            let x = area.width.saturating_sub(popup_w) / 2;
+            let y = area.height.saturating_sub(popup_h) / 2;
+            let popup_area =
+                ratatui::layout::Rect::new(x, y, popup_w.min(area.width), popup_h.min(area.height));
+
+            use ratatui::widgets::Clear;
+            frame.render_widget(Clear, popup_area);
+
+            let block = Block::default().borders(Borders::ALL).title(Span::styled(
+                " Send failed ",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ));
+            let inner = block.inner(popup_area);
+            frame.render_widget(block, popup_area);
+
+            let mut text: Vec<Line> = lines_clone
+                .iter()
+                .map(|l| Line::from(Span::styled(l.clone(), Style::default().fg(Color::Red))))
+                .collect();
+            text.push(Line::from(""));
+            text.push(Line::from(Span::styled(
+                "  press any key to dismiss",
+                Style::default().fg(Color::DarkGray),
+            )));
+            frame.render_widget(Paragraph::new(text), inner);
+        })?;
+
+        if let Event::Key(_) = event::read()? {
+            return Ok(());
+        }
+    }
 }
 
 /// Draw a centred confirmation dialog and wait for y / n / Esc / Enter.
@@ -807,11 +873,7 @@ fn draw(
         .split(area);
 
     // ── tab bar ──
-    let mut titles: Vec<Line> = vec![Line::from(Span::raw("Threads"))];
-    for e in &app.emails {
-        titles.push(Line::from(truncate(&e.title, 20)));
-    }
-    let tab_bar = Tabs::new(titles)
+    let tab_bar = Tabs::default()
         .select(app.active)
         .style(Style::default().fg(Color::DarkGray))
         .highlight_style(
