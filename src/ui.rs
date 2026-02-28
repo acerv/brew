@@ -17,6 +17,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Tabs, Wrap},
 };
 use std::io::{self, Write};
+use std::path::PathBuf;
 use std::process::Command;
 use std::rc::Rc;
 use std::sync::{
@@ -146,6 +147,8 @@ struct EmailTab {
     date: String,
     body: String,
     message_id: Option<String>,
+    /// Path to the on-disk Maildir file backing this tab.
+    path: PathBuf,
     scroll: u16,
     scroll_max: u16,
 }
@@ -181,6 +184,7 @@ impl EmailTab {
             date,
             body,
             message_id,
+            path: meta.path.clone(),
             scroll: 0,
             scroll_max: u16::MAX,
         })
@@ -315,7 +319,7 @@ pub fn run(mailbox_cfgs: &[&Mailbox], smtp: &Smtp) -> Result<()> {
     let flag = Arc::clone(&new_mail);
     let mut watcher = recommended_watcher(move |res: notify::Result<notify::Event>| {
         if let Ok(ev) = res {
-            if matches!(ev.kind, EventKind::Create(_)) {
+            if matches!(ev.kind, EventKind::Create(_) | EventKind::Remove(_)) {
                 flag.store(true, Ordering::Relaxed);
             }
         }
@@ -656,6 +660,12 @@ fn show_error(
     }
 }
 
+/// Delete the Maildir file at `path`. Errors are silently ignored — the
+/// filesystem watcher will not fire if nothing was removed.
+fn delete_mail(path: &std::path::Path) {
+    let _ = std::fs::remove_file(path);
+}
+
 /// Draw a centred confirmation dialog and wait for y / n / Esc / Enter.
 /// Returns `true` if the user confirms (y / Enter), `false` otherwise.
 fn confirm_send(
@@ -819,6 +829,11 @@ fn run_loop(
                             }
                         }
                     }
+                    KeyCode::Char('D') => {
+                        if let Some(ti) = app.selected_thread() {
+                            delete_mail(&entries[ti].thread.data.path);
+                        }
+                    }
                     _ => {}
                 }
             } else {
@@ -827,6 +842,11 @@ fn run_loop(
                 match key.code {
                     KeyCode::Char('q') => app.close_active(),
                     KeyCode::Esc => app.active = 0,
+                    KeyCode::Char('D') => {
+                        let path = app.emails[ei].path.clone();
+                        app.close_active();
+                        delete_mail(&path);
+                    }
                     KeyCode::Char('r') => {
                         let _ = reply(&app.emails[ei], true, signature, smtp, terminal);
                     }
