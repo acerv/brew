@@ -401,6 +401,15 @@ fn bare_address(s: &str) -> &str {
     s.trim()
 }
 
+/// Split a comma-separated address list (as produced by `format_addr_list`)
+/// into individual bare `user@host` addresses, excluding `self_addr`.
+fn split_addresses(list: &str, self_addr: &str) -> Vec<String> {
+    list.split(',')
+        .map(|s| bare_address(s.trim()).to_string())
+        .filter(|a| !a.is_empty() && !a.eq_ignore_ascii_case(self_addr))
+        .collect()
+}
+
 /// Build a reply draft, open vim, ask for confirmation, then send via sendmail.
 ///
 /// `quote` — when true the original body is included quoted with "> ".
@@ -412,7 +421,18 @@ fn reply(
     smtp: &Smtp,
     terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>,
 ) -> Result<()> {
-    let to = bare_address(&tab.from);
+    let self_addr = smtp.username.as_str();
+    // Reply-all: To = original sender + original To recipients (minus self).
+    let sender = bare_address(&tab.from).to_string();
+    let mut to_addrs: Vec<String> = vec![sender];
+    for a in split_addresses(&tab.to, self_addr) {
+        if !to_addrs.iter().any(|x| x.eq_ignore_ascii_case(&a)) {
+            to_addrs.push(a);
+        }
+    }
+    // Cc = original Cc (minus self).
+    let cc_addrs = split_addresses(&tab.cc, self_addr);
+
     let subject = if tab.title.starts_with("Re:") || tab.title.starts_with("re:") {
         tab.title.clone()
     } else {
@@ -424,13 +444,14 @@ fn reply(
     //   --
     //   <blank line — user types reply here>
     //   <optional quoted body>
-    //
-    // The "--" is a visible separator in the editor only; before sending it is
-    // replaced with a blank line to produce a valid RFC 2822 message.
     let mut header_count = 2usize; // To + Subject
     let mut draft = String::new();
-    draft.push_str(&format!("To: {}\n", to));
+    draft.push_str(&format!("To: {}\n", to_addrs.join(", ")));
     draft.push_str(&format!("Subject: {}\n", subject));
+    if !cc_addrs.is_empty() {
+        draft.push_str(&format!("Cc: {}\n", cc_addrs.join(", ")));
+        header_count += 1;
+    }
     if let Some(ref mid) = tab.message_id {
         draft.push_str(&format!("In-Reply-To: <{}>\n", mid));
         header_count += 1;
@@ -485,7 +506,6 @@ fn reply(
     }
 
     // Find the first line that is exactly "--" and take everything after it.
-    // Uses a line-by-line search so it works regardless of line endings.
     let body = edited
         .lines()
         .enumerate()
@@ -494,7 +514,9 @@ fn reply(
         .unwrap_or_else(|| edited.clone());
     let body = body.trim_start_matches('\n');
 
-    if let Err(e) = send_message(smtp, to, &subject, body) {
+    let to_refs: Vec<&str> = to_addrs.iter().map(|s| s.as_str()).collect();
+    let cc_refs: Vec<&str> = cc_addrs.iter().map(|s| s.as_str()).collect();
+    if let Err(e) = send_message(smtp, &to_refs, &cc_refs, &subject, body) {
         show_error(&e.to_string(), terminal)?;
     }
 
@@ -512,7 +534,16 @@ fn thanks_reply(
     smtp: &Smtp,
     terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>,
 ) -> Result<()> {
-    let to = bare_address(&tab.from);
+    let self_addr = smtp.username.as_str();
+    let sender = bare_address(&tab.from).to_string();
+    let mut to_addrs: Vec<String> = vec![sender];
+    for a in split_addresses(&tab.to, self_addr) {
+        if !to_addrs.iter().any(|x| x.eq_ignore_ascii_case(&a)) {
+            to_addrs.push(a);
+        }
+    }
+    let cc_addrs = split_addresses(&tab.cc, self_addr);
+
     let subject = if tab.title.starts_with("Re:") || tab.title.starts_with("re:") {
         tab.title.clone()
     } else {
@@ -521,8 +552,12 @@ fn thanks_reply(
 
     let mut header_count = 2usize;
     let mut draft = String::new();
-    draft.push_str(&format!("To: {}\n", to));
+    draft.push_str(&format!("To: {}\n", to_addrs.join(", ")));
     draft.push_str(&format!("Subject: {}\n", subject));
+    if !cc_addrs.is_empty() {
+        draft.push_str(&format!("Cc: {}\n", cc_addrs.join(", ")));
+        header_count += 1;
+    }
     if let Some(ref mid) = tab.message_id {
         draft.push_str(&format!("In-Reply-To: <{}>\n", mid));
         header_count += 1;
@@ -548,7 +583,7 @@ fn thanks_reply(
     let editor = std::env::var("VISUAL")
         .or_else(|_| std::env::var("EDITOR"))
         .unwrap_or_else(|_| "vim".to_string());
-    let body_line = header_count + 2; // cursor on the thanks body
+    let body_line = header_count + 2;
     Command::new(&editor)
         .arg(format!("+{}", body_line))
         .arg(&tmp_path)
@@ -573,7 +608,9 @@ fn thanks_reply(
         .unwrap_or_else(|| edited.clone());
     let body = body.trim_start_matches('\n');
 
-    if let Err(e) = send_message(smtp, to, &subject, body) {
+    let to_refs: Vec<&str> = to_addrs.iter().map(|s| s.as_str()).collect();
+    let cc_refs: Vec<&str> = cc_addrs.iter().map(|s| s.as_str()).collect();
+    if let Err(e) = send_message(smtp, &to_refs, &cc_refs, &subject, body) {
         show_error(&e.to_string(), terminal)?;
     }
 
@@ -581,16 +618,25 @@ fn thanks_reply(
 }
 
 /// Send a message via SMTP using lettre.
-fn send_message(smtp: &Smtp, to: &str, subject: &str, body: &str) -> Result<()> {
+///
+/// `to` must be non-empty. `cc` may be empty.
+fn send_message(smtp: &Smtp, to: &[&str], cc: &[&str], subject: &str, body: &str) -> Result<()> {
     use anyhow::anyhow;
 
-    let email = Message::builder()
-        .from(
-            smtp.username
-                .parse()
-                .map_err(|e| anyhow!("invalid From address: {e}"))?,
-        )
-        .to(to.parse().map_err(|e| anyhow!("invalid To address: {e}"))?)
+    let mut builder = Message::builder().from(
+        smtp.username
+            .parse()
+            .map_err(|e| anyhow!("invalid From address: {e}"))?,
+    );
+    for addr in to {
+        builder = builder
+            .to(addr.parse().map_err(|e| anyhow!("invalid To address {addr}: {e}"))?);
+    }
+    for addr in cc {
+        builder = builder
+            .cc(addr.parse().map_err(|e| anyhow!("invalid Cc address {addr}: {e}"))?);
+    }
+    let email = builder
         .subject(subject)
         .header(ContentType::TEXT_PLAIN)
         .body(body.to_string())
