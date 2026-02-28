@@ -8,4 +8,6 @@ anyhow = "1.0.100"
 crossterm = "0.29.0"
 mail-parser = "0.11.1"
 ratatui = "0.30.0"
+serde = { version = "1.0.228", features = ["derive"] }
 time = { version = "0.3.47", features = ["formatting", "macros"] }
+toml = "1.0.3"
