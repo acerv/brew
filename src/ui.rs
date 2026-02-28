@@ -342,10 +342,10 @@ pub fn run(mailbox_cfgs: &[&Mailbox], smtp: &Smtp) -> Result<()> {
     let new_mail = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&new_mail);
     let mut watcher = recommended_watcher(move |res: notify::Result<notify::Event>| {
-        if let Ok(ev) = res {
-            if matches!(ev.kind, EventKind::Create(_) | EventKind::Remove(_)) {
-                flag.store(true, Ordering::Relaxed);
-            }
+        if let Ok(ev) = res
+            && matches!(ev.kind, EventKind::Create(_) | EventKind::Remove(_))
+        {
+            flag.store(true, Ordering::Relaxed);
         }
     })?;
     for mb in mailbox_cfgs {
@@ -384,10 +384,10 @@ pub fn run(mailbox_cfgs: &[&Mailbox], smtp: &Smtp) -> Result<()> {
 
 /// Extract a bare email address from a display string like "Name <addr>" or "addr".
 fn bare_address(s: &str) -> &str {
-    if let Some(start) = s.find('<') {
-        if let Some(end) = s[start..].find('>') {
-            return s[start + 1..start + end].trim();
-        }
+    if let Some(start) = s.find('<')
+        && let Some(end) = s[start..].find('>')
+    {
+        return s[start + 1..start + end].trim();
     }
     s.trim()
 }
@@ -485,7 +485,7 @@ fn reply(
         .unwrap_or_else(|| edited.clone());
     let body = body.trim_start_matches('\n');
 
-    if let Err(e) = send_message(smtp, to, &subject, &body) {
+    if let Err(e) = send_message(smtp, to, &subject, body) {
         show_error(&e.to_string(), terminal)?;
     }
 
@@ -564,7 +564,7 @@ fn thanks_reply(
         .unwrap_or_else(|| edited.clone());
     let body = body.trim_start_matches('\n');
 
-    if let Err(e) = send_message(smtp, &to, &subject, &body) {
+    if let Err(e) = send_message(smtp, to, &subject, body) {
         show_error(&e.to_string(), terminal)?;
     }
 
@@ -763,10 +763,11 @@ fn run_loop(
             // Clamp selections so nothing points past the end.
             for (i, state) in app.thread_list_states.iter_mut().enumerate() {
                 let len = mailbox_entries[i].len();
-                if let Some(sel) = state.selected() {
-                    if sel >= len && len > 0 {
-                        state.select(Some(len - 1));
-                    }
+                if let Some(sel) = state.selected()
+                    && sel >= len
+                    && len > 0
+                {
+                    state.select(Some(len - 1));
                 }
             }
         }

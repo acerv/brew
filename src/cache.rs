@@ -38,7 +38,7 @@ impl EmailThread {
 
 /// Sort `threads` descending by timestamp (latest first), then recurse into
 /// replies. Emails with no timestamp sort after all dated ones.
-fn sort_threads(threads: &mut Vec<Rc<EmailThread>>) {
+fn sort_threads(threads: &mut [Rc<EmailThread>]) {
     threads.sort_unstable_by(|a, b| {
         // None (no date) sorts last.
         b.data.timestamp.cmp(&a.data.timestamp)
