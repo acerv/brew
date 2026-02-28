@@ -1,4 +1,5 @@
 use crate::cache::{EmailMeta, EmailThread, MailCache};
+use crate::config::{load_signature, load_thanks};
 use anyhow::Result;
 use crossterm::{
     event::{self, Event, KeyCode, KeyModifiers},
@@ -305,13 +306,22 @@ pub fn run(mailboxes: &[(&str, MailCache)]) -> Result<()> {
         })
         .collect();
 
+    let signature = load_signature();
+    let thanks = load_thanks();
+
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = run_loop(&mut terminal, &labels, &entries);
+    let result = run_loop(
+        &mut terminal,
+        &labels,
+        &entries,
+        signature.as_deref(),
+        thanks.as_deref(),
+    );
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -339,6 +349,7 @@ fn bare_address(s: &str) -> &str {
 fn reply(
     tab: &EmailTab,
     quote: bool,
+    signature: Option<&str>,
     terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>,
 ) -> Result<()> {
     let to = bare_address(&tab.from);
@@ -370,6 +381,11 @@ fn reply(
         for line in tab.body.lines() {
             draft.push_str(&format!("> {}\n", line));
         }
+    }
+    if let Some(sig) = signature {
+        draft.push_str("--\n");
+        draft.push_str(sig.trim_end());
+        draft.push('\n');
     }
 
     // Write to a temp file.
@@ -423,6 +439,84 @@ fn reply(
         stdin.write_all(message.as_bytes())?;
     }
 
+    child.wait()?;
+
+    Ok(())
+}
+
+/// Send a pre-written thanks reply.
+///
+/// Opens vim pre-filled with the thanks file content so the user can review
+/// it before sending.  Does nothing if `thanks` is `None`.
+fn thanks_reply(
+    tab: &EmailTab,
+    thanks: &str,
+    signature: Option<&str>,
+    terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>,
+) -> Result<()> {
+    let to = bare_address(&tab.from);
+    let subject = if tab.title.starts_with("Re:") || tab.title.starts_with("re:") {
+        tab.title.clone()
+    } else {
+        format!("Re: {}", tab.title)
+    };
+
+    let mut header_count = 2usize;
+    let mut draft = String::new();
+    draft.push_str(&format!("To: {}\n", to));
+    draft.push_str(&format!("Subject: {}\n", subject));
+    if let Some(ref mid) = tab.message_id {
+        draft.push_str(&format!("In-Reply-To: <{}>\n", mid));
+        header_count += 1;
+    }
+    draft.push_str("--\n");
+    draft.push_str(thanks.trim_end());
+    draft.push('\n');
+    if let Some(sig) = signature {
+        draft.push_str("--\n");
+        draft.push_str(sig.trim_end());
+        draft.push('\n');
+    }
+
+    let tmp_path = std::env::temp_dir().join(format!("mail-thanks-{}.eml", std::process::id()));
+    {
+        let mut f = std::fs::File::create(&tmp_path)?;
+        f.write_all(draft.as_bytes())?;
+    }
+
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+
+    let editor = std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .unwrap_or_else(|_| "vim".to_string());
+    let body_line = header_count + 2; // cursor on the thanks body
+    Command::new(&editor)
+        .arg(format!("+{}", body_line))
+        .arg(&tmp_path)
+        .status()?;
+
+    let edited = std::fs::read_to_string(&tmp_path)?;
+    let _ = std::fs::remove_file(&tmp_path);
+
+    enable_raw_mode()?;
+    execute!(terminal.backend_mut(), EnterAlternateScreen)?;
+    terminal.clear()?;
+
+    if !confirm_send(terminal)? {
+        return Ok(());
+    }
+
+    let message = edited.replacen("--\n", "\n", 1);
+
+    let sendmail = std::env::var("SENDMAIL").unwrap_or_else(|_| "sendmail".to_string());
+    let mut child = Command::new(&sendmail)
+        .arg("-t")
+        .stdin(std::process::Stdio::piped())
+        .spawn()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(message.as_bytes())?;
+    }
     child.wait()?;
 
     Ok(())
@@ -494,6 +588,8 @@ fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     labels: &[&str],
     mailbox_entries: &[Vec<Entry>],
+    signature: Option<&str>,
+    thanks: Option<&str>,
 ) -> Result<()> {
     let mut app = App::new(labels.len());
 
@@ -536,14 +632,21 @@ fn run_loop(
                     KeyCode::Char('r') => {
                         if let Some(ti) = app.selected_thread() {
                             if let Ok(tab) = EmailTab::from_meta(&entries[ti].thread.data) {
-                                let _ = reply(&tab, true, terminal);
+                                let _ = reply(&tab, true, signature, terminal);
                             }
                         }
                     }
                     KeyCode::Char('R') => {
                         if let Some(ti) = app.selected_thread() {
                             if let Ok(tab) = EmailTab::from_meta(&entries[ti].thread.data) {
-                                let _ = reply(&tab, false, terminal);
+                                let _ = reply(&tab, false, signature, terminal);
+                            }
+                        }
+                    }
+                    KeyCode::Char('t') => {
+                        if let (Some(thanks_body), Some(ti)) = (thanks, app.selected_thread()) {
+                            if let Ok(tab) = EmailTab::from_meta(&entries[ti].thread.data) {
+                                let _ = thanks_reply(&tab, thanks_body, signature, terminal);
                             }
                         }
                     }
@@ -556,10 +659,15 @@ fn run_loop(
                     KeyCode::Char('q') => app.close_active(),
                     KeyCode::Esc => app.active = 0,
                     KeyCode::Char('r') => {
-                        let _ = reply(&app.emails[ei], true, terminal);
+                        let _ = reply(&app.emails[ei], true, signature, terminal);
                     }
                     KeyCode::Char('R') => {
-                        let _ = reply(&app.emails[ei], false, terminal);
+                        let _ = reply(&app.emails[ei], false, signature, terminal);
+                    }
+                    KeyCode::Char('t') => {
+                        if let Some(thanks_body) = thanks {
+                            let _ = thanks_reply(&app.emails[ei], thanks_body, signature, terminal);
+                        }
                     }
                     // J/K navigate to next/prev thread in the active mailbox.
                     KeyCode::Char('J') => {
@@ -662,7 +770,7 @@ fn draw(
         let entries = &mailbox_entries[app.selected_mailbox];
         let selected = app.selected_thread().map(|i| i + 1).unwrap_or(0);
         let status = Paragraph::new(format!(
-            " {}/{} — j/k move  J/K mailbox  Enter open  r reply  R reply-empty  h/l tabs  q quit",
+            " {}/{} — j/k move  J/K mailbox  Enter open  r reply  R reply-empty  t thanks  h/l tabs  q quit",
             selected,
             entries.len(),
         ))
@@ -672,7 +780,7 @@ fn draw(
         let ei = app.active - 1;
         draw_email(frame, &mut app.emails[ei], chunks[1]);
         let status = Paragraph::new(
-            " j/k scroll  J/K thread  h/l tabs  r reply  R reply-empty  Esc back  q close",
+            " j/k scroll  J/K thread  h/l tabs  r reply  R reply-empty  t thanks  Esc back  q close",
         )
         .style(Style::default().fg(Color::DarkGray));
         frame.render_widget(status, chunks[2]);

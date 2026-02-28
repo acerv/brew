@@ -20,7 +20,7 @@ impl Config {
     /// Looks for the file at `$XDG_CONFIG_HOME/brew/config.toml`,
     /// falling back to `~/.config/brew/config.toml`.
     pub fn load() -> Result<Self> {
-        let path = config_path();
+        let path = config_dir().join("config.toml");
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("cannot read config file: {}", path.display()))?;
         toml::from_str(&text)
@@ -28,14 +28,26 @@ impl Config {
     }
 }
 
-fn config_path() -> PathBuf {
-    let base = std::env::var("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| dirs_home().join(".config"));
-    base.join("brew").join("config.toml")
+/// Read `signature` from the brew config directory if it exists.
+pub fn load_signature() -> Option<String> {
+    std::fs::read_to_string(config_dir().join("signature")).ok()
 }
 
-fn dirs_home() -> PathBuf {
+/// Read `thanks` from the brew config directory if it exists.
+pub fn load_thanks() -> Option<String> {
+    std::fs::read_to_string(config_dir().join("thanks")).ok()
+}
+
+/// The brew configuration directory (`$XDG_CONFIG_HOME/brew` or
+/// `~/.config/brew`).
+pub fn config_dir() -> PathBuf {
+    let base = std::env::var("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| home_dir().join(".config"));
+    base.join("brew")
+}
+
+fn home_dir() -> PathBuf {
     std::env::var("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/"))
