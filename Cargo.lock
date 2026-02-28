@@ -81,6 +81,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "brew"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "crossterm",
+ "mail-parser",
+ "ratatui",
+ "serde",
+ "time",
+ "toml",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -610,19 +623,6 @@ checksum = "c0aeb26bf5e836cc1c341c8106051b573f1766dfa05aa87f0b98be5e51b02303"
 dependencies = [
  "nix",
  "winapi",
-]
-
-[[package]]
-name = "mail-cacher"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "crossterm",
- "mail-parser",
- "ratatui",
- "serde",
- "time",
- "toml",
 ]
 
 [[package]]

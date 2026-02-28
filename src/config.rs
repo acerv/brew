@@ -17,8 +17,8 @@ pub struct Config {
 impl Config {
     /// Load and parse the config file.
     ///
-    /// Looks for the file at `$XDG_CONFIG_HOME/mail-cacher/config.toml`,
-    /// falling back to `~/.config/mail-cacher/config.toml`.
+    /// Looks for the file at `$XDG_CONFIG_HOME/brew/config.toml`,
+    /// falling back to `~/.config/brew/config.toml`.
     pub fn load() -> Result<Self> {
         let path = config_path();
         let text = std::fs::read_to_string(&path)
@@ -26,16 +26,13 @@ impl Config {
         toml::from_str(&text)
             .with_context(|| format!("cannot parse config file: {}", path.display()))
     }
-
 }
 
 fn config_path() -> PathBuf {
     let base = std::env::var("XDG_CONFIG_HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            dirs_home().join(".config")
-        });
-    base.join("mail-cacher").join("config.toml")
+        .unwrap_or_else(|_| dirs_home().join(".config"));
+    base.join("brew").join("config.toml")
 }
 
 fn dirs_home() -> PathBuf {
