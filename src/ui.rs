@@ -1,4 +1,5 @@
 use crate::cache::{EmailMeta, EmailThread, MailCache};
+use crate::config::Mailbox;
 use crate::config::{Smtp, load_signature, load_thanks};
 use anyhow::Result;
 use crossterm::{
@@ -6,6 +7,7 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
+use notify::{EventKind, RecursiveMode, Watcher, recommended_watcher};
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
@@ -17,6 +19,10 @@ use ratatui::{
 use std::io::{self, Write};
 use std::process::Command;
 use std::rc::Rc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use time::OffsetDateTime;
 use time::macros::format_description;
 
@@ -299,19 +305,27 @@ impl App {
 
 // ── public entry point ────────────────────────────────────────────────────────
 
-pub fn run(mailboxes: &[(&str, MailCache)], smtp: &Smtp) -> Result<()> {
-    let labels: Vec<&str> = mailboxes.iter().map(|(l, _)| *l).collect();
-    let entries: Vec<Vec<Entry>> = mailboxes
-        .iter()
-        .map(|(_, cache)| {
-            let mut v = Vec::new();
-            flatten(&cache.threads, 0, &mut v);
-            v
-        })
-        .collect();
-
+pub fn run(mailbox_cfgs: &[&Mailbox], smtp: &Smtp) -> Result<()> {
     let signature = load_signature();
     let thanks = load_thanks();
+
+    // Set up filesystem watcher. Any Create event in a mailbox directory sets
+    // the flag so run_loop knows to rebuild the thread lists.
+    let new_mail = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&new_mail);
+    let mut watcher = recommended_watcher(move |res: notify::Result<notify::Event>| {
+        if let Ok(ev) = res {
+            if matches!(ev.kind, EventKind::Create(_)) {
+                flag.store(true, Ordering::Relaxed);
+            }
+        }
+    })?;
+    for mb in mailbox_cfgs {
+        let path = std::path::Path::new(&mb.path);
+        if path.exists() {
+            let _ = watcher.watch(path, RecursiveMode::Recursive);
+        }
+    }
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -321,12 +335,15 @@ pub fn run(mailboxes: &[(&str, MailCache)], smtp: &Smtp) -> Result<()> {
 
     let result = run_loop(
         &mut terminal,
-        &labels,
-        &entries,
+        mailbox_cfgs,
         signature.as_deref(),
         thanks.as_deref(),
         smtp,
+        new_mail,
     );
+
+    // Watcher must stay alive until the loop exits.
+    drop(watcher);
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -703,16 +720,50 @@ fn confirm_send(
 
 fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    labels: &[&str],
-    mailbox_entries: &[Vec<Entry>],
+    mailbox_cfgs: &[&Mailbox],
     signature: Option<&str>,
     thanks: Option<&str>,
     smtp: &Smtp,
+    new_mail: Arc<AtomicBool>,
 ) -> Result<()> {
+    let labels: Vec<&str> = mailbox_cfgs.iter().map(|mb| mb.label.as_str()).collect();
+
+    let build_entries = |cfgs: &[&Mailbox]| -> Vec<Vec<Entry>> {
+        cfgs.iter()
+            .map(|mb| {
+                let mut v = Vec::new();
+                if let Ok(cache) = MailCache::build(&mb.path) {
+                    flatten(&cache.threads, 0, &mut v);
+                }
+                v
+            })
+            .collect()
+    };
+
+    let mut mailbox_entries = build_entries(mailbox_cfgs);
     let mut app = App::new(labels.len());
 
     loop {
-        terminal.draw(|frame| draw(frame, &mut app, labels, mailbox_entries))?;
+        // Rebuild if the filesystem watcher flagged new mail.
+        if new_mail.swap(false, Ordering::Relaxed) {
+            mailbox_entries = build_entries(mailbox_cfgs);
+            // Clamp selections so nothing points past the end.
+            for (i, state) in app.thread_list_states.iter_mut().enumerate() {
+                let len = mailbox_entries[i].len();
+                if let Some(sel) = state.selected() {
+                    if sel >= len && len > 0 {
+                        state.select(Some(len - 1));
+                    }
+                }
+            }
+        }
+
+        terminal.draw(|frame| draw(frame, &mut app, &labels, &mailbox_entries))?;
+
+        // Poll with a 1-second timeout so we wake up promptly after new mail.
+        if !event::poll(std::time::Duration::from_secs(1))? {
+            continue;
+        }
 
         if let Event::Key(key) = event::read()? {
             match key.code {
@@ -732,10 +783,10 @@ fn run_loop(
                 let entries = &mailbox_entries[app.selected_mailbox];
                 match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => break,
-                    KeyCode::Char('j') | KeyCode::Down => app.thread_down(mailbox_entries),
+                    KeyCode::Char('j') | KeyCode::Down => app.thread_down(&mailbox_entries),
                     KeyCode::Char('k') | KeyCode::Up => app.thread_up(),
                     KeyCode::Home => app.thread_home(),
-                    KeyCode::End => app.thread_end(mailbox_entries),
+                    KeyCode::End => app.thread_end(&mailbox_entries),
                     // J/K switch mailbox.
                     KeyCode::Char('J') => app.mailbox_down(labels.len()),
                     KeyCode::Char('K') => app.mailbox_up(),
@@ -795,7 +846,7 @@ fn run_loop(
                     }
                     // J/K navigate to next/prev thread in the active mailbox.
                     KeyCode::Char('J') => {
-                        app.thread_down(mailbox_entries);
+                        app.thread_down(&mailbox_entries);
                         let entries = &mailbox_entries[app.selected_mailbox];
                         if let Some(ti) = app.selected_thread() {
                             if let Ok(new_tab) = EmailTab::from_meta(&entries[ti].thread.data) {
