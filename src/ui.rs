@@ -244,6 +244,15 @@ impl App {
         }
     }
 
+    fn go_next(&mut self) {
+        self.active = (self.active + 1) % self.tab_count();
+    }
+
+    fn go_prev(&mut self) {
+        let n = self.tab_count();
+        self.active = (self.active + n - 1) % n;
+    }
+
     fn close_active(&mut self) {
         if self.active == 0 {
             return;
@@ -785,6 +794,14 @@ fn run_loop(
                     app.go_right();
                     continue;
                 }
+                KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    app.go_next();
+                    continue;
+                }
+                KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    app.go_prev();
+                    continue;
+                }
                 _ => {}
             }
 
@@ -944,7 +961,11 @@ fn draw(
         .split(area);
 
     // ── tab bar ──
-    let tab_bar = Tabs::default()
+    let mut titles: Vec<Line> = vec![Line::from(Span::raw("Threads"))];
+    for e in &app.emails {
+        titles.push(Line::from(truncate(&e.title, 20)));
+    }
+    let tab_bar = Tabs::new(titles)
         .select(app.active)
         .style(Style::default().fg(Color::DarkGray))
         .highlight_style(
