@@ -13,6 +13,9 @@ use std::rc::Rc;
 pub struct EmailMeta {
     pub message_id: String,
     pub subject: String,
+    /// Unix timestamp (seconds since epoch) from the `Date:` header.
+    /// `None` when the header is absent or unparseable.
+    pub timestamp: Option<i64>,
     /// Absolute path to the Maildir file that contains this message.
     /// Passed to `MailCache::load_mail` to retrieve the full email in O(1).
     pub path: PathBuf,
@@ -33,6 +36,18 @@ impl EmailThread {
     }
 }
 
+/// Sort `threads` descending by timestamp (latest first), then recurse into
+/// replies. Emails with no timestamp sort after all dated ones.
+fn sort_threads(threads: &mut Vec<Rc<EmailThread>>) {
+    threads.sort_unstable_by(|a, b| {
+        // None (no date) sorts last.
+        b.data.timestamp.cmp(&a.data.timestamp)
+    });
+    for thread in threads.iter() {
+        sort_threads(&mut thread.replies.borrow_mut());
+    }
+}
+
 /// Holds the thread tree built from a Maildir folder.
 ///
 /// Use `MailCache::build` to construct it, then `load_mail` to fetch the full
@@ -48,12 +63,11 @@ impl MailCache {
     /// file path for each message is stored inside [`EmailMeta`] so that any
     /// individual email can be loaded on demand without another directory walk.
     ///
-    /// Email files might be read in a random order, so we can't really create
-    /// a list of threads in `O(n)`, where `n` is the number of emails, unless
-    /// we reserve a slot for each parent we didn't reach yet.
+    /// Email files might be read in a random order, so we can't really create a list
+    /// of threads in `O(n)`, where `n` is the number of emails, unless we reserve
+    /// a slot for each parent we didn't reach yet.
     ///
-    /// For instance, let's suppose that we would like to obtain the following
-    /// thread:
+    /// For instance, let's suppose that we would like to obtain the following thread:
     ///
     /// ```text
     /// A -- B -- C
@@ -61,8 +75,8 @@ impl MailCache {
     ///            `-- G
     /// ```
     ///
-    /// Unfortunately, we might receive `E` before `A` and `D`, so it becomes
-    /// hard to guess where we can find the parents:
+    /// Unfortunately, we might receive `E` before `A` and `D`, so it becomes hard to
+    /// guess where we can find the parents:
     ///
     /// ```text
     /// ? -- B -- C
@@ -70,14 +84,14 @@ impl MailCache {
     ///            `-- G
     /// ```
     ///
-    /// By using a Hash we can store parents IDs we are searching for and the
-    /// list of children which are searching for it. We will probably need a new
-    /// hash also for storing the list of emails we already seen. In this way,
-    /// every search operation will cost `O(1)`.
+    /// By using a Hash we can store parents IDs we are searching for and the list of
+    /// children which are searching for it. We will probably need a new hash also for
+    /// storing the list of emails we already seen. In this way, every search operation
+    /// will cost `O(1)`.
     ///
     /// - `Hs` associates parent ID to a list of emails which are searching for it
-    /// - `Hm` is the lookup hash of already seen messages, associating
-    ///   `Message-ID` to its message
+    /// - `Hm` is the lookup hash of already seen messages, associating `Message-ID`
+    ///   to its message
     ///
     /// We can define a parent as an email with empty `reply_to`, hence:
     ///
@@ -97,12 +111,12 @@ impl MailCache {
     ///    - is empty, we don't do anything
     /// 4. we add `Mi` to `Hm[id]`
     ///
-    /// This insertion algorithm has to be repeated for all the emails we read
-    /// from the Maildir folder.
+    /// This insertion algorithm has to be repeated for all the emails we read from
+    /// the Maildir folder.
     ///
-    /// By using `Rc` reference counter, we ensure that messages are stored
-    /// only once and the memory consumption will be proportional to the amount
-    /// of emails which have been loaded.
+    /// By using `Rc` reference counter, we ensure that messages are stored only
+    /// once and the memory consumption will be proportional to the amount of emails
+    /// which have been loaded.
     pub fn build(dir: &str) -> Result<Self> {
         let mut searching: HashMap<String, Vec<Rc<EmailThread>>> = HashMap::new();
         let mut lookup: HashMap<String, Rc<EmailThread>> = HashMap::new();
@@ -126,6 +140,7 @@ impl MailCache {
             let meta = EmailMeta {
                 message_id: id.clone(),
                 subject: parsed.subject().unwrap_or_default().to_string(),
+                timestamp: parsed.date().map(|d| d.to_timestamp()),
                 path: content.path().to_path_buf(),
             };
 
@@ -163,6 +178,9 @@ impl MailCache {
             threads.extend(orphans);
         }
 
+        // Sort the full tree — root threads and all reply lists — latest first.
+        sort_threads(&mut threads);
+
         Ok(Self { threads })
     }
 
@@ -182,15 +200,6 @@ impl MailCache {
     }
 }
 
-#[cfg(test)]
-fn print_threads(prefix: &str, thread: &EmailThread) {
-    println!("{}{}", prefix, thread.data.subject);
-    let child_prefix = format!("{}  ` ", prefix);
-    for child in thread.replies.borrow().iter() {
-        print_threads(&child_prefix, child);
-    }
-}
-
 ////////////////////////////////////////////////////////////////////////////////
 
 #[cfg(test)]
@@ -200,16 +209,12 @@ mod tests {
     #[test]
     fn test_build_threads() {
         let cache = MailCache::build("/home/acer/Mail/LTP/").unwrap();
-        for t in cache.threads.iter() {
-            print_threads("", t);
-        }
         dbg!(cache.threads.len());
     }
 
     #[test]
     fn test_load_mail() {
         let cache = MailCache::build("/home/acer/Mail/LTP/").unwrap();
-        // Pick the first root thread and load its full message.
         if let Some(thread) = cache.threads.first() {
             let msg = MailCache::load_mail(&thread.data).unwrap();
             assert_eq!(msg.message_id(), Some(thread.data.message_id.as_str()));
