@@ -156,18 +156,11 @@ struct EmailTab {
 }
 
 impl EmailTab {
-    /// Load the email, reading the file from `path` (which may differ from
-    /// `meta.path` when `mark_seen` has already renamed the file on disk).
-    /// Use this when `mark_seen` has already renamed the file on disk so that
-    /// `meta.path` is stale.
+    /// Load the email at `path` and build a tab from it, using `meta` for
+    /// subject/timestamp (which may differ from `meta.path` when `mark_seen`
+    /// has already renamed the file on disk).
     fn from_meta_at(meta: &EmailMeta, path: &Path) -> Result<Self> {
-        use anyhow::Context;
-        let bytes = std::fs::read(path)
-            .with_context(|| format!("failed to read mail file: {}", path.display()))?;
-        let msg = mail_parser::MessageParser::default()
-            .parse(&bytes)
-            .map(|m| m.into_owned())
-            .with_context(|| format!("failed to parse mail file: {}", path.display()))?;
+        let msg = MailCache::load_mail(path)?;
 
         let from = format_addr_list(msg.from());
         let to = format_addr_list(msg.to());

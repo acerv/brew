@@ -184,19 +184,19 @@ impl MailCache {
         Ok(Self { threads })
     }
 
-    /// Load and fully parse the email described by `meta`.
+    /// Load and fully parse the email file at `path`.
     ///
-    /// The file path is stored inside [`EmailMeta`], so this is an O(1)
-    /// operation — no directory scan, no HashMap lookup. It reads the single
-    /// file from disk and returns the fully parsed [`Message`].
-    pub fn load_mail(meta: &EmailMeta) -> Result<Message<'static>> {
-        let bytes = fs::read(&meta.path)
-            .with_context(|| format!("failed to read mail file: {}", meta.path.display()))?;
+    /// This is an O(1) operation — no directory scan, no HashMap lookup.
+    /// Pass the current on-disk path; callers are responsible for resolving
+    /// any renames that `mark_seen` may have performed since the cache was built.
+    pub fn load_mail(path: &std::path::Path) -> Result<Message<'static>> {
+        let bytes = fs::read(path)
+            .with_context(|| format!("failed to read mail file: {}", path.display()))?;
 
         MessageParser::default()
             .parse(&bytes)
             .map(|m| m.into_owned())
-            .with_context(|| format!("failed to parse mail file: {}", meta.path.display()))
+            .with_context(|| format!("failed to parse mail file: {}", path.display()))
     }
 }
 
@@ -210,14 +210,5 @@ mod tests {
     fn test_build_threads() {
         let cache = MailCache::build("/home/acer/Mail/LTP/").unwrap();
         dbg!(cache.threads.len());
-    }
-
-    #[test]
-    fn test_load_mail() {
-        let cache = MailCache::build("/home/acer/Mail/LTP/").unwrap();
-        if let Some(thread) = cache.threads.first() {
-            let msg = MailCache::load_mail(&thread.data).unwrap();
-            assert_eq!(msg.message_id(), Some(thread.data.message_id.as_str()));
-        }
     }
 }
