@@ -8,10 +8,19 @@ pub struct Mailbox {
     pub path: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct Smtp {
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub password: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct Config {
     #[serde(rename = "mailbox")]
     pub mailboxes: Vec<Mailbox>,
+    pub smtp: Smtp,
 }
 
 impl Config {

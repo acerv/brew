@@ -1,5 +1,5 @@
 use crate::cache::{EmailMeta, EmailThread, MailCache};
-use crate::config::{load_signature, load_thanks};
+use crate::config::{Smtp, load_signature, load_thanks};
 use anyhow::Result;
 use crossterm::{
     event::{self, Event, KeyCode, KeyModifiers},
@@ -19,6 +19,10 @@ use std::process::Command;
 use std::rc::Rc;
 use time::OffsetDateTime;
 use time::macros::format_description;
+
+use lettre::message::header::ContentType;
+use lettre::transport::smtp::authentication::Credentials;
+use lettre::{Message, SmtpTransport, Transport};
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
@@ -295,7 +299,7 @@ impl App {
 
 // ── public entry point ────────────────────────────────────────────────────────
 
-pub fn run(mailboxes: &[(&str, MailCache)]) -> Result<()> {
+pub fn run(mailboxes: &[(&str, MailCache)], smtp: &Smtp) -> Result<()> {
     let labels: Vec<&str> = mailboxes.iter().map(|(l, _)| *l).collect();
     let entries: Vec<Vec<Entry>> = mailboxes
         .iter()
@@ -321,6 +325,7 @@ pub fn run(mailboxes: &[(&str, MailCache)]) -> Result<()> {
         &entries,
         signature.as_deref(),
         thanks.as_deref(),
+        smtp,
     );
 
     disable_raw_mode()?;
@@ -350,6 +355,7 @@ fn reply(
     tab: &EmailTab,
     quote: bool,
     signature: Option<&str>,
+    smtp: &Smtp,
     terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>,
 ) -> Result<()> {
     let to = bare_address(&tab.from);
@@ -428,18 +434,7 @@ fn reply(
     // RFC 2822 message (headers \n\n body) that sendmail -t understands.
     let message = edited.replacen("--\n", "\n", 1);
 
-    // Send via sendmail -t (reads recipients from To:/Cc:/Bcc: headers).
-    let sendmail = std::env::var("SENDMAIL").unwrap_or_else(|_| "sendmail".to_string());
-    let mut child = Command::new(&sendmail)
-        .arg("-t")
-        .stdin(std::process::Stdio::piped())
-        .spawn()?;
-
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(message.as_bytes())?;
-    }
-
-    child.wait()?;
+    send_message(smtp, &message)?;
 
     Ok(())
 }
@@ -452,6 +447,7 @@ fn thanks_reply(
     tab: &EmailTab,
     thanks: &str,
     signature: Option<&str>,
+    smtp: &Smtp,
     terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>,
 ) -> Result<()> {
     let to = bare_address(&tab.from);
@@ -509,15 +505,70 @@ fn thanks_reply(
 
     let message = edited.replacen("--\n", "\n", 1);
 
-    let sendmail = std::env::var("SENDMAIL").unwrap_or_else(|_| "sendmail".to_string());
-    let mut child = Command::new(&sendmail)
-        .arg("-t")
-        .stdin(std::process::Stdio::piped())
-        .spawn()?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(message.as_bytes())?;
+    send_message(smtp, &message)?;
+
+    Ok(())
+}
+
+/// Send a raw RFC 2822 message via SMTP using lettre.
+///
+/// Parses `To:` and `Subject:` from the raw text, builds a lettre `Message`,
+/// and delivers it via authenticated SMTP with TLS.
+fn send_message(smtp: &Smtp, raw: &str) -> Result<()> {
+    use anyhow::anyhow;
+
+    // Extract headers from the raw message text.
+    let mut to_addr = String::new();
+    let mut subject = String::new();
+    let mut in_headers = true;
+    let mut body_start = 0usize;
+
+    for line in raw.lines() {
+        if in_headers && line.is_empty() {
+            in_headers = false;
+        }
+        if in_headers {
+            if let Some(val) = line.strip_prefix("To:") {
+                to_addr = val.trim().to_string();
+            } else if let Some(val) = line.strip_prefix("Subject:") {
+                subject = val.trim().to_string();
+            }
+        }
     }
-    child.wait()?;
+    // body is everything after the first blank line
+    if let Some(pos) = raw.find("\n\n") {
+        body_start = pos + 2;
+    }
+    let body = &raw[body_start..];
+
+    if to_addr.is_empty() {
+        return Err(anyhow!("No To: header found in message"));
+    }
+
+    let email = Message::builder()
+        .from(
+            smtp.username
+                .parse()
+                .map_err(|e| anyhow!("invalid From address: {e}"))?,
+        )
+        .to(to_addr
+            .parse()
+            .map_err(|e| anyhow!("invalid To address: {e}"))?)
+        .subject(&subject)
+        .header(ContentType::TEXT_PLAIN)
+        .body(body.to_string())
+        .map_err(|e| anyhow!("failed to build message: {e}"))?;
+
+    let creds = Credentials::new(smtp.username.clone(), smtp.password.clone());
+    let transport = SmtpTransport::relay(&smtp.host)
+        .map_err(|e| anyhow!("SMTP relay error: {e}"))?
+        .port(smtp.port)
+        .credentials(creds)
+        .build();
+
+    transport
+        .send(&email)
+        .map_err(|e| anyhow!("SMTP send error: {e}"))?;
 
     Ok(())
 }
@@ -590,6 +641,7 @@ fn run_loop(
     mailbox_entries: &[Vec<Entry>],
     signature: Option<&str>,
     thanks: Option<&str>,
+    smtp: &Smtp,
 ) -> Result<()> {
     let mut app = App::new(labels.len());
 
@@ -632,21 +684,21 @@ fn run_loop(
                     KeyCode::Char('r') => {
                         if let Some(ti) = app.selected_thread() {
                             if let Ok(tab) = EmailTab::from_meta(&entries[ti].thread.data) {
-                                let _ = reply(&tab, true, signature, terminal);
+                                let _ = reply(&tab, true, signature, smtp, terminal);
                             }
                         }
                     }
                     KeyCode::Char('R') => {
                         if let Some(ti) = app.selected_thread() {
                             if let Ok(tab) = EmailTab::from_meta(&entries[ti].thread.data) {
-                                let _ = reply(&tab, false, signature, terminal);
+                                let _ = reply(&tab, false, signature, smtp, terminal);
                             }
                         }
                     }
                     KeyCode::Char('t') => {
                         if let (Some(thanks_body), Some(ti)) = (thanks, app.selected_thread()) {
                             if let Ok(tab) = EmailTab::from_meta(&entries[ti].thread.data) {
-                                let _ = thanks_reply(&tab, thanks_body, signature, terminal);
+                                let _ = thanks_reply(&tab, thanks_body, signature, smtp, terminal);
                             }
                         }
                     }
@@ -659,14 +711,20 @@ fn run_loop(
                     KeyCode::Char('q') => app.close_active(),
                     KeyCode::Esc => app.active = 0,
                     KeyCode::Char('r') => {
-                        let _ = reply(&app.emails[ei], true, signature, terminal);
+                        let _ = reply(&app.emails[ei], true, signature, smtp, terminal);
                     }
                     KeyCode::Char('R') => {
-                        let _ = reply(&app.emails[ei], false, signature, terminal);
+                        let _ = reply(&app.emails[ei], false, signature, smtp, terminal);
                     }
                     KeyCode::Char('t') => {
                         if let Some(thanks_body) = thanks {
-                            let _ = thanks_reply(&app.emails[ei], thanks_body, signature, terminal);
+                            let _ = thanks_reply(
+                                &app.emails[ei],
+                                thanks_body,
+                                signature,
+                                smtp,
+                                terminal,
+                            );
                         }
                     }
                     // J/K navigate to next/prev thread in the active mailbox.

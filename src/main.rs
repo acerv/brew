@@ -17,5 +17,5 @@ fn main() -> anyhow::Result<()> {
         })
         .collect::<anyhow::Result<_>>()?;
 
-    ui::run(&mailboxes)
+    ui::run(&mailboxes, &cfg.smtp)
 }

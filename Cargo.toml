@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.100"
 crossterm = "0.29.0"
+lettre = { version = "0.11.19", features = ["smtp-transport", "native-tls", "builder"] }
 mail-parser = "0.11.1"
 ratatui = "0.30.0"
 serde = { version = "1.0.228", features = ["derive"] }
