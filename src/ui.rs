@@ -1,4 +1,5 @@
 use crate::cache::{EmailMeta, EmailThread, MailCache};
+use crate::read::{is_unread, mark_seen};
 use crate::config::Mailbox;
 use crate::config::{Smtp, load_signature, load_thanks};
 use anyhow::Result;
@@ -819,7 +820,9 @@ fn run_loop(
                     KeyCode::Char('K') => app.mailbox_up(),
                     KeyCode::Enter => {
                         if let Some(ti) = app.selected_thread() {
-                            if let Ok(tab) = EmailTab::from_meta(&entries[ti].thread.data) {
+                            let meta = &entries[ti].thread.data;
+                            if let Ok(tab) = EmailTab::from_meta(meta) {
+                                mark_seen(&meta.path);
                                 app.emails.push(tab);
                                 app.active = app.tab_count() - 1;
                             }
@@ -827,21 +830,27 @@ fn run_loop(
                     }
                     KeyCode::Char('r') => {
                         if let Some(ti) = app.selected_thread() {
-                            if let Ok(tab) = EmailTab::from_meta(&entries[ti].thread.data) {
+                            let meta = &entries[ti].thread.data;
+                            if let Ok(tab) = EmailTab::from_meta(meta) {
+                                mark_seen(&meta.path);
                                 let _ = reply(&tab, true, signature, smtp, terminal);
                             }
                         }
                     }
                     KeyCode::Char('R') => {
                         if let Some(ti) = app.selected_thread() {
-                            if let Ok(tab) = EmailTab::from_meta(&entries[ti].thread.data) {
+                            let meta = &entries[ti].thread.data;
+                            if let Ok(tab) = EmailTab::from_meta(meta) {
+                                mark_seen(&meta.path);
                                 let _ = reply(&tab, false, signature, smtp, terminal);
                             }
                         }
                     }
                     KeyCode::Char('t') => {
                         if let (Some(thanks_body), Some(ti)) = (thanks, app.selected_thread()) {
-                            if let Ok(tab) = EmailTab::from_meta(&entries[ti].thread.data) {
+                            let meta = &entries[ti].thread.data;
+                            if let Ok(tab) = EmailTab::from_meta(meta) {
+                                mark_seen(&meta.path);
                                 let _ = thanks_reply(&tab, thanks_body, signature, smtp, terminal);
                             }
                         }
@@ -886,7 +895,9 @@ fn run_loop(
                         app.thread_down(&mailbox_entries);
                         let entries = &mailbox_entries[app.selected_mailbox];
                         if let Some(ti) = app.selected_thread() {
-                            if let Ok(new_tab) = EmailTab::from_meta(&entries[ti].thread.data) {
+                            let meta = &entries[ti].thread.data;
+                            if let Ok(new_tab) = EmailTab::from_meta(meta) {
+                                mark_seen(&meta.path);
                                 app.emails[ei] = new_tab;
                             }
                         }
@@ -895,7 +906,9 @@ fn run_loop(
                         app.thread_up();
                         let entries = &mailbox_entries[app.selected_mailbox];
                         if let Some(ti) = app.selected_thread() {
-                            if let Ok(new_tab) = EmailTab::from_meta(&entries[ti].thread.data) {
+                            let meta = &entries[ti].thread.data;
+                            if let Ok(new_tab) = EmailTab::from_meta(meta) {
+                                mark_seen(&meta.path);
                                 app.emails[ei] = new_tab;
                             }
                         }
@@ -1008,7 +1021,7 @@ fn draw_list(
 ) {
     // Split horizontally: left pane for mailboxes, right pane for threads.
     // Left pane width = longest label + 2 borders + 2 padding, min 16, max 32.
-    let left_w = (labels.iter().map(|l| l.len()).max().unwrap_or(8) + 4).clamp(16, 32) as u16;
+    let left_w = (labels.iter().map(|l| l.len()).max().unwrap_or(8) + 10).clamp(16, 40) as u16;
     let panes = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(left_w), Constraint::Min(0)])
@@ -1017,7 +1030,22 @@ fn draw_list(
     // ── left: mailbox list ──
     let mb_items: Vec<ListItem> = labels
         .iter()
-        .map(|l| ListItem::new(Line::from(Span::raw(l.to_string()))))
+        .zip(mailbox_entries.iter())
+        .map(|(label, entries)| {
+            let unread: usize = entries
+                .iter()
+                .filter(|e| is_unread(&e.thread.data.path))
+                .count();
+            let (text, style) = if unread > 0 {
+                (
+                    format!("{} ({})", label, unread),
+                    Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                )
+            } else {
+                (label.to_string(), Style::default())
+            };
+            ListItem::new(Line::from(Span::styled(text, style)))
+        })
         .collect();
     let mb_list = List::new(mb_items)
         .block(Block::default().borders(Borders::ALL).title(" Mailbox "))
@@ -1045,10 +1073,15 @@ fn draw_list(
             } else {
                 e.thread.data.subject.clone()
             };
+            let subject_style = if is_unread(&e.thread.data.path) {
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
             ListItem::new(Line::from(vec![
                 Span::styled(date, Style::default().fg(Color::Cyan)),
                 Span::styled(indent, Style::default().fg(Color::DarkGray)),
-                Span::raw(subject),
+                Span::styled(subject, subject_style),
             ]))
         })
         .collect();
