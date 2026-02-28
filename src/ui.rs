@@ -17,8 +17,9 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Tabs, Wrap},
 };
+use std::collections::HashMap;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
 use std::sync::{
@@ -155,8 +156,18 @@ struct EmailTab {
 }
 
 impl EmailTab {
-    fn from_meta(meta: &EmailMeta) -> Result<Self> {
-        let msg = MailCache::load_mail(meta)?;
+    /// Load the email, reading the file from `path` (which may differ from
+    /// `meta.path` when `mark_seen` has already renamed the file on disk).
+    /// Use this when `mark_seen` has already renamed the file on disk so that
+    /// `meta.path` is stale.
+    fn from_meta_at(meta: &EmailMeta, path: &Path) -> Result<Self> {
+        use anyhow::Context;
+        let bytes = std::fs::read(path)
+            .with_context(|| format!("failed to read mail file: {}", path.display()))?;
+        let msg = mail_parser::MessageParser::default()
+            .parse(&bytes)
+            .map(|m| m.into_owned())
+            .with_context(|| format!("failed to parse mail file: {}", path.display()))?;
 
         let from = format_addr_list(msg.from());
         let to = format_addr_list(msg.to());
@@ -185,7 +196,7 @@ impl EmailTab {
             date,
             body,
             message_id,
-            path: meta.path.clone(),
+            path: path.to_path_buf(),
             scroll: 0,
             scroll_max: u16::MAX,
         })
@@ -203,6 +214,10 @@ struct App {
     mailbox_list_state: ListState,
     /// Per-mailbox thread list state (selection within threads).
     thread_list_states: Vec<ListState>,
+    /// Tracks the current on-disk path for emails that have been marked seen
+    /// (keyed by Message-ID). The cache holds the original pre-rename path;
+    /// this map overrides it so re-opening an already-read email works.
+    seen_paths: HashMap<String, PathBuf>,
 }
 
 impl App {
@@ -226,6 +241,7 @@ impl App {
             selected_mailbox: 0,
             mailbox_list_state,
             thread_list_states,
+            seen_paths: HashMap::new(),
         }
     }
 
@@ -823,8 +839,16 @@ fn run_loop(
                     KeyCode::Enter => {
                         if let Some(ti) = app.selected_thread() {
                             let meta = &entries[ti].thread.data;
-                            if let Ok(tab) = EmailTab::from_meta(meta) {
-                                mark_seen(&meta.path);
+                            let eff_path = app
+                                .seen_paths
+                                .get(&meta.message_id)
+                                .map(|p| p.as_path())
+                                .unwrap_or(&meta.path);
+                            if let Ok(mut tab) = EmailTab::from_meta_at(meta, eff_path) {
+                                let new_path = mark_seen(&tab.path);
+                                app.seen_paths
+                                    .insert(meta.message_id.clone(), new_path.clone());
+                                tab.path = new_path;
                                 app.emails.push(tab);
                                 app.active = app.tab_count() - 1;
                             }
@@ -833,8 +857,16 @@ fn run_loop(
                     KeyCode::Char('r') => {
                         if let Some(ti) = app.selected_thread() {
                             let meta = &entries[ti].thread.data;
-                            if let Ok(tab) = EmailTab::from_meta(meta) {
-                                mark_seen(&meta.path);
+                            let eff_path = app
+                                .seen_paths
+                                .get(&meta.message_id)
+                                .map(|p| p.as_path())
+                                .unwrap_or(&meta.path);
+                            if let Ok(mut tab) = EmailTab::from_meta_at(meta, eff_path) {
+                                let new_path = mark_seen(&tab.path);
+                                app.seen_paths
+                                    .insert(meta.message_id.clone(), new_path.clone());
+                                tab.path = new_path;
                                 let _ = reply(&tab, true, signature, smtp, terminal);
                             }
                         }
@@ -842,8 +874,16 @@ fn run_loop(
                     KeyCode::Char('R') => {
                         if let Some(ti) = app.selected_thread() {
                             let meta = &entries[ti].thread.data;
-                            if let Ok(tab) = EmailTab::from_meta(meta) {
-                                mark_seen(&meta.path);
+                            let eff_path = app
+                                .seen_paths
+                                .get(&meta.message_id)
+                                .map(|p| p.as_path())
+                                .unwrap_or(&meta.path);
+                            if let Ok(mut tab) = EmailTab::from_meta_at(meta, eff_path) {
+                                let new_path = mark_seen(&tab.path);
+                                app.seen_paths
+                                    .insert(meta.message_id.clone(), new_path.clone());
+                                tab.path = new_path;
                                 let _ = reply(&tab, false, signature, smtp, terminal);
                             }
                         }
@@ -851,15 +891,29 @@ fn run_loop(
                     KeyCode::Char('t') => {
                         if let (Some(thanks_body), Some(ti)) = (thanks, app.selected_thread()) {
                             let meta = &entries[ti].thread.data;
-                            if let Ok(tab) = EmailTab::from_meta(meta) {
-                                mark_seen(&meta.path);
+                            let eff_path = app
+                                .seen_paths
+                                .get(&meta.message_id)
+                                .map(|p| p.as_path())
+                                .unwrap_or(&meta.path);
+                            if let Ok(mut tab) = EmailTab::from_meta_at(meta, eff_path) {
+                                let new_path = mark_seen(&tab.path);
+                                app.seen_paths
+                                    .insert(meta.message_id.clone(), new_path.clone());
+                                tab.path = new_path;
                                 let _ = thanks_reply(&tab, thanks_body, signature, smtp, terminal);
                             }
                         }
                     }
                     KeyCode::Char('D') => {
                         if let Some(ti) = app.selected_thread() {
-                            delete_mail(&entries[ti].thread.data.path);
+                            let meta = &entries[ti].thread.data;
+                            let eff_path = app
+                                .seen_paths
+                                .get(&meta.message_id)
+                                .map(|p| p.as_path())
+                                .unwrap_or(&meta.path);
+                            delete_mail(eff_path);
                         }
                     }
                     _ => {}
@@ -898,8 +952,16 @@ fn run_loop(
                         let entries = &mailbox_entries[app.selected_mailbox];
                         if let Some(ti) = app.selected_thread() {
                             let meta = &entries[ti].thread.data;
-                            if let Ok(new_tab) = EmailTab::from_meta(meta) {
-                                mark_seen(&meta.path);
+                            let eff_path = app
+                                .seen_paths
+                                .get(&meta.message_id)
+                                .map(|p| p.as_path())
+                                .unwrap_or(&meta.path);
+                            if let Ok(mut new_tab) = EmailTab::from_meta_at(meta, eff_path) {
+                                let new_path = mark_seen(&new_tab.path);
+                                app.seen_paths
+                                    .insert(meta.message_id.clone(), new_path.clone());
+                                new_tab.path = new_path;
                                 app.emails[ei] = new_tab;
                             }
                         }
@@ -909,8 +971,16 @@ fn run_loop(
                         let entries = &mailbox_entries[app.selected_mailbox];
                         if let Some(ti) = app.selected_thread() {
                             let meta = &entries[ti].thread.data;
-                            if let Ok(new_tab) = EmailTab::from_meta(meta) {
-                                mark_seen(&meta.path);
+                            let eff_path = app
+                                .seen_paths
+                                .get(&meta.message_id)
+                                .map(|p| p.as_path())
+                                .unwrap_or(&meta.path);
+                            if let Ok(mut new_tab) = EmailTab::from_meta_at(meta, eff_path) {
+                                let new_path = mark_seen(&new_tab.path);
+                                app.seen_paths
+                                    .insert(meta.message_id.clone(), new_path.clone());
+                                new_tab.path = new_path;
                                 app.emails[ei] = new_tab;
                             }
                         }
@@ -993,7 +1063,14 @@ fn draw(
 
     // ── content + status bar ──
     if app.active == 0 {
-        draw_list(frame, app, labels, mailbox_entries, chunks[1]);
+        draw_list(
+            frame,
+            app,
+            labels,
+            mailbox_entries,
+            chunks[1],
+            &app.seen_paths.clone(),
+        );
         let entries = &mailbox_entries[app.selected_mailbox];
         let selected = app.selected_thread().map(|i| i + 1).unwrap_or(0);
         let status = Paragraph::new(format!(
@@ -1020,6 +1097,7 @@ fn draw_list(
     labels: &[&str],
     mailbox_entries: &[Vec<Entry>],
     area: ratatui::layout::Rect,
+    seen_paths: &HashMap<String, PathBuf>,
 ) {
     // Split horizontally: left pane for mailboxes, right pane for threads.
     // Left pane width = longest label + 2 borders + 2 padding, min 16, max 32.
@@ -1036,7 +1114,13 @@ fn draw_list(
         .map(|(label, entries)| {
             let unread: usize = entries
                 .iter()
-                .filter(|e| is_unread(&e.thread.data.path))
+                .filter(|e| {
+                    let eff = seen_paths
+                        .get(&e.thread.data.message_id)
+                        .map(|p| p.as_path())
+                        .unwrap_or(&e.thread.data.path);
+                    is_unread(eff)
+                })
                 .count();
             let (text, style) = if unread > 0 {
                 (
@@ -1077,7 +1161,11 @@ fn draw_list(
             } else {
                 e.thread.data.subject.clone()
             };
-            let subject_style = if is_unread(&e.thread.data.path) {
+            let eff_path = seen_paths
+                .get(&e.thread.data.message_id)
+                .map(|p| p.as_path())
+                .unwrap_or(&e.thread.data.path);
+            let subject_style = if is_unread(eff_path) {
                 Style::default()
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD)

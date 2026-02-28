@@ -11,7 +11,7 @@
 //! mbsync writes and syncs these flags with the IMAP server, so this gives
 //! an accurate, server-consistent view without any extra state files.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Returns `true` when the Maildir file at `path` should be considered unread.
 pub fn is_unread(path: &Path) -> bool {
@@ -45,14 +45,15 @@ pub fn is_unread(path: &Path) -> bool {
 ///
 /// Errors are silently ignored — a failed rename just means the status
 /// won't be synced back to the server, which is not fatal.
-pub fn mark_seen(path: &Path) {
+/// Returns the new path after renaming (same as `path` if already seen or rename failed).
+pub fn mark_seen(path: &Path) -> PathBuf {
     let name = match path.file_name().and_then(|n| n.to_str()) {
         Some(n) => n.to_owned(),
-        None => return,
+        None => return path.to_path_buf(),
     };
     let dir = match path.parent() {
         Some(d) => d,
-        None => return,
+        None => return path.to_path_buf(),
     };
 
     let new_name = if path.components().any(|c| c.as_os_str() == "new") {
@@ -65,7 +66,7 @@ pub fn mark_seen(path: &Path) {
             let info = &name[colon + 1..];
             if let Some(flags) = info.strip_prefix("2,") {
                 if flags.contains('S') {
-                    return; // already seen
+                    return path.to_path_buf(); // already seen
                 }
                 // Insert S in alphabetical order among existing flags
                 let mut chars: Vec<char> = flags.chars().collect();
@@ -84,7 +85,7 @@ pub fn mark_seen(path: &Path) {
     };
 
     if new_name == name {
-        return;
+        return path.to_path_buf();
     }
 
     // Build destination path: always in cur/
@@ -95,5 +96,9 @@ pub fn mark_seen(path: &Path) {
     };
 
     let dest = cur_dir.join(&new_name);
-    let _ = std::fs::rename(path, &dest);
+    if std::fs::rename(path, &dest).is_ok() {
+        dest
+    } else {
+        path.to_path_buf()
+    }
 }
