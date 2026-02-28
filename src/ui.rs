@@ -13,7 +13,8 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Tabs, Wrap},
 };
-use std::io;
+use std::io::{self, Write};
+use std::process::Command;
 use std::rc::Rc;
 use time::OffsetDateTime;
 use time::macros::format_description;
@@ -137,6 +138,7 @@ struct EmailTab {
     cc: String,
     date: String,
     body: String,
+    message_id: Option<String>,
     scroll: u16,
     scroll_max: u16,
 }
@@ -162,6 +164,8 @@ impl EmailTab {
             meta.subject.clone()
         };
 
+        let message_id = msg.message_id().map(|s| s.to_owned());
+
         Ok(Self {
             title,
             from,
@@ -169,6 +173,7 @@ impl EmailTab {
             cc,
             date,
             body,
+            message_id,
             scroll: 0,
             scroll_max: u16::MAX,
         })
@@ -242,6 +247,162 @@ pub fn run(cache: &MailCache) -> Result<()> {
     result
 }
 
+// ── reply ────────────────────────────────────────────────────────────────────
+
+/// Extract a bare email address from a display string like "Name <addr>" or "addr".
+fn bare_address(s: &str) -> &str {
+    if let Some(start) = s.find('<') {
+        if let Some(end) = s[start..].find('>') {
+            return s[start + 1..start + end].trim();
+        }
+    }
+    s.trim()
+}
+
+/// Build a reply draft, open vim, then send the edited result via sendmail.
+///
+/// TUI is suspended for the duration so vim has full terminal control.
+fn reply(
+    tab: &EmailTab,
+    terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>,
+) -> Result<()> {
+    // Build the draft text.
+    let to = bare_address(&tab.from);
+    let subject = if tab.title.starts_with("Re:") || tab.title.starts_with("re:") {
+        tab.title.clone()
+    } else {
+        format!("Re: {}", tab.title)
+    };
+
+    let mut draft = String::new();
+    draft.push_str(&format!("To: {}\n", to));
+    draft.push_str(&format!("Subject: {}\n", subject));
+    if let Some(ref mid) = tab.message_id {
+        draft.push_str(&format!("In-Reply-To: <{}>\n", mid));
+    }
+    draft.push_str("--\n\n"); // blank line separates headers from body in the editor
+
+    // Quote the original body.
+    for line in tab.body.lines() {
+        draft.push_str(&format!("> {}\n", line));
+    }
+
+    // Write draft to a named temp file so vim can open it.
+    let tmp_path = std::env::temp_dir().join(format!("mail-reply-{}.eml", std::process::id()));
+    {
+        let mut f = std::fs::File::create(&tmp_path)?;
+        f.write_all(draft.as_bytes())?;
+    }
+
+    // Suspend TUI.
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+
+    // Open vim.
+    let editor = std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .unwrap_or_else(|_| "vim".to_string());
+    Command::new(&editor).arg(&tmp_path).status()?;
+
+    // Read back the edited file.
+    let edited = std::fs::read_to_string(&tmp_path)?;
+    let _ = std::fs::remove_file(&tmp_path);
+
+    // Restore TUI.
+    enable_raw_mode()?;
+    execute!(terminal.backend_mut(), EnterAlternateScreen)?;
+    terminal.clear()?;
+
+    // Ask the user whether to send.
+    if !confirm_send(terminal)? {
+        return Ok(());
+    }
+
+    // Split at the "--" separator: everything before is headers, after is body.
+    // If the user deleted the separator, treat the whole file as the message.
+    let message = if let Some(sep) = edited.find("\n--\n") {
+        let headers = edited[..sep].trim();
+        let body = edited[sep + 4..].trim();
+        format!("{}\n\n{}\n", headers, body)
+    } else {
+        edited.trim().to_string() + "\n"
+    };
+
+    // Send via sendmail -t (reads To:/Cc:/Bcc: from the message headers).
+    let sendmail = std::env::var("SENDMAIL").unwrap_or_else(|_| "sendmail".to_string());
+    let mut child = Command::new(&sendmail)
+        .arg("-t")
+        .stdin(std::process::Stdio::piped())
+        .spawn()?;
+    if let Some(stdin) = child.stdin.take() {
+        let mut stdin = stdin;
+        stdin.write_all(message.as_bytes())?;
+    }
+    child.wait()?;
+
+    Ok(())
+}
+
+/// Draw a centred confirmation dialog and wait for y / n / Esc / Enter.
+/// Returns `true` if the user confirms (y / Enter), `false` otherwise.
+fn confirm_send(
+    terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>,
+) -> Result<bool> {
+    loop {
+        terminal.draw(|frame| {
+            let area = frame.area();
+
+            // Centre a 36×5 popup.
+            let popup_w: u16 = 36;
+            let popup_h: u16 = 5;
+            let x = area.width.saturating_sub(popup_w) / 2;
+            let y = area.height.saturating_sub(popup_h) / 2;
+            let popup_area =
+                ratatui::layout::Rect::new(x, y, popup_w.min(area.width), popup_h.min(area.height));
+
+            use ratatui::widgets::Clear;
+            frame.render_widget(Clear, popup_area);
+
+            let block = Block::default().borders(Borders::ALL).title(Span::styled(
+                " Send reply? ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ));
+
+            let inner = block.inner(popup_area);
+            frame.render_widget(block, popup_area);
+
+            let text = vec![
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled(
+                        "  [ y ]",
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw("  send    "),
+                    Span::styled(
+                        "[ n / Esc ]",
+                        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw("  cancel"),
+                ]),
+            ];
+            frame.render_widget(Paragraph::new(text), inner);
+        })?;
+
+        if let Event::Key(key) = event::read()? {
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => return Ok(true),
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc | KeyCode::Char('q') => {
+                    return Ok(false);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 // ── main loop ─────────────────────────────────────────────────────────────────
 
 fn run_loop(
@@ -302,6 +463,11 @@ fn run_loop(
                 match key.code {
                     KeyCode::Char('q') => app.close_active(),
                     KeyCode::Esc => app.active = 0,
+
+                    // Reply: open vim with a prefilled draft, send on exit.
+                    KeyCode::Char('r') => {
+                        let _ = reply(&app.emails[ei], terminal);
+                    }
 
                     // Navigate to previous email in the list, replacing this tab.
                     KeyCode::Char('K') => {
@@ -415,7 +581,7 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App, entries: &[Entry]) {
         let ei = app.active - 1;
         draw_email(frame, &mut app.emails[ei], chunks[1]);
         let status = Paragraph::new(
-            " j/k ↑/↓ scroll  h/l ←/→ switch tabs  J/K select email  Esc back to list  q close tab",
+            " j/k ↑/↓ scroll  h/l ←/→ switch tabs  J/K select email  r reply  Esc back  q close",
         )
         .style(Style::default().fg(Color::DarkGray));
         frame.render_widget(status, chunks[2]);
