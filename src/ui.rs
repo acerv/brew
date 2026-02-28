@@ -110,28 +110,22 @@ fn format_addr_list(list: Option<&mail_parser::Address>) -> String {
 // ── flat list entry ───────────────────────────────────────────────────────────
 
 struct Entry {
-    mailbox: String,
     depth: usize,
     thread: Rc<EmailThread>,
 }
 
-fn flatten(label: &str, threads: &[Rc<EmailThread>], depth: usize, out: &mut Vec<Entry>) {
+fn flatten(threads: &[Rc<EmailThread>], depth: usize, out: &mut Vec<Entry>) {
     for thread in threads {
         out.push(Entry {
-            mailbox: label.to_string(),
             depth,
             thread: thread.clone(),
         });
         let replies = thread.replies.borrow();
-        flatten(label, &replies, depth + 1, out);
+        flatten(&replies, depth + 1, out);
     }
 }
 
 // ── tab kinds ─────────────────────────────────────────────────────────────────
-
-struct ListTab {
-    list_state: ListState,
-}
 
 struct EmailTab {
     title: String,
@@ -185,70 +179,37 @@ impl EmailTab {
 // ── app state ─────────────────────────────────────────────────────────────────
 
 struct App {
-    list: ListTab,
-    emails: Vec<EmailTab>,
+    /// Which top-level tab is shown: 0 = list view, 1+ = open email tabs.
     active: usize,
-    /// Maps each row index in the rendered list to an index into `entries`.
-    /// `None` rows are mailbox header rows (not selectable).
-    row_to_entry: Vec<Option<usize>>,
+    emails: Vec<EmailTab>,
+    /// Index of the currently highlighted mailbox in the left pane.
+    selected_mailbox: usize,
+    mailbox_list_state: ListState,
+    /// Per-mailbox thread list state (selection within threads).
+    thread_list_states: Vec<ListState>,
 }
 
 impl App {
-    fn new(entries: &[Entry]) -> Self {
-        let (_, row_to_entry) = build_rows(entries);
-        // Select the first email row (skip any leading header rows).
-        let first_email_row = row_to_entry.iter().position(|r| r.is_some());
-        let mut list_state = ListState::default();
-        list_state.select(first_email_row);
+    fn new(mailbox_count: usize) -> Self {
+        let mut mailbox_list_state = ListState::default();
+        if mailbox_count > 0 {
+            mailbox_list_state.select(Some(0));
+        }
+        let mut thread_list_states: Vec<ListState> = (0..mailbox_count)
+            .map(|_| {
+                let mut s = ListState::default();
+                s.select(Some(0));
+                s
+            })
+            .collect();
+        // Don't select anything if there are no threads (handled at draw time).
+        let _ = thread_list_states.first_mut();
         Self {
-            list: ListTab { list_state },
-            emails: Vec::new(),
             active: 0,
-            row_to_entry,
-        }
-    }
-
-    /// Return the entry index for the currently selected row, if it is an email row.
-    fn selected_entry(&self) -> Option<usize> {
-        self.list
-            .list_state
-            .selected()
-            .and_then(|row| self.row_to_entry[row])
-    }
-
-    /// Move selection down by one email row, skipping header rows.
-    fn list_down(&mut self) {
-        let current = self.list.list_state.selected().unwrap_or(0);
-        for row in (current + 1)..self.row_to_entry.len() {
-            if self.row_to_entry[row].is_some() {
-                self.list.list_state.select(Some(row));
-                return;
-            }
-        }
-    }
-
-    /// Move selection up by one email row, skipping header rows.
-    fn list_up(&mut self) {
-        let current = self.list.list_state.selected().unwrap_or(0);
-        for row in (0..current).rev() {
-            if self.row_to_entry[row].is_some() {
-                self.list.list_state.select(Some(row));
-                return;
-            }
-        }
-    }
-
-    /// Move selection to the first email row.
-    fn list_home(&mut self) {
-        if let Some(row) = self.row_to_entry.iter().position(|r| r.is_some()) {
-            self.list.list_state.select(Some(row));
-        }
-    }
-
-    /// Move selection to the last email row.
-    fn list_end(&mut self) {
-        if let Some(row) = self.row_to_entry.iter().rposition(|r| r.is_some()) {
-            self.list.list_state.select(Some(row));
+            emails: Vec::new(),
+            selected_mailbox: 0,
+            mailbox_list_state,
+            thread_list_states,
         }
     }
 
@@ -275,15 +236,74 @@ impl App {
         self.emails.remove(self.active - 1);
         self.active = self.active.min(self.tab_count() - 1);
     }
+
+    /// The currently selected thread index within the active mailbox.
+    fn selected_thread(&self) -> Option<usize> {
+        self.thread_list_states[self.selected_mailbox].selected()
+    }
+
+    /// Move thread selection down within the active mailbox.
+    fn thread_down(&mut self, mailbox_entries: &[Vec<Entry>]) {
+        let len = mailbox_entries[self.selected_mailbox].len();
+        if len == 0 {
+            return;
+        }
+        let cur = self.thread_list_states[self.selected_mailbox]
+            .selected()
+            .unwrap_or(0);
+        self.thread_list_states[self.selected_mailbox].select(Some((cur + 1).min(len - 1)));
+    }
+
+    /// Move thread selection up within the active mailbox.
+    fn thread_up(&mut self) {
+        let cur = self.thread_list_states[self.selected_mailbox]
+            .selected()
+            .unwrap_or(0);
+        self.thread_list_states[self.selected_mailbox].select(Some(cur.saturating_sub(1)));
+    }
+
+    /// Move thread selection to first thread.
+    fn thread_home(&mut self) {
+        self.thread_list_states[self.selected_mailbox].select(Some(0));
+    }
+
+    /// Move thread selection to last thread.
+    fn thread_end(&mut self, mailbox_entries: &[Vec<Entry>]) {
+        let len = mailbox_entries[self.selected_mailbox].len();
+        if len > 0 {
+            self.thread_list_states[self.selected_mailbox].select(Some(len - 1));
+        }
+    }
+
+    /// Switch to the next mailbox.
+    fn mailbox_down(&mut self, count: usize) {
+        if self.selected_mailbox + 1 < count {
+            self.selected_mailbox += 1;
+            self.mailbox_list_state.select(Some(self.selected_mailbox));
+        }
+    }
+
+    /// Switch to the previous mailbox.
+    fn mailbox_up(&mut self) {
+        if self.selected_mailbox > 0 {
+            self.selected_mailbox -= 1;
+            self.mailbox_list_state.select(Some(self.selected_mailbox));
+        }
+    }
 }
 
 // ── public entry point ────────────────────────────────────────────────────────
 
 pub fn run(mailboxes: &[(&str, MailCache)]) -> Result<()> {
-    let mut entries: Vec<Entry> = Vec::new();
-    for (label, cache) in mailboxes {
-        flatten(label, &cache.threads, 0, &mut entries);
-    }
+    let labels: Vec<&str> = mailboxes.iter().map(|(l, _)| *l).collect();
+    let entries: Vec<Vec<Entry>> = mailboxes
+        .iter()
+        .map(|(_, cache)| {
+            let mut v = Vec::new();
+            flatten(&cache.threads, 0, &mut v);
+            v
+        })
+        .collect();
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -291,7 +311,7 @@ pub fn run(mailboxes: &[(&str, MailCache)]) -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = run_loop(&mut terminal, &entries);
+    let result = run_loop(&mut terminal, &labels, &entries);
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -472,12 +492,13 @@ fn confirm_send(
 
 fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    entries: &[Entry],
+    labels: &[&str],
+    mailbox_entries: &[Vec<Entry>],
 ) -> Result<()> {
-    let mut app = App::new(entries);
+    let mut app = App::new(labels.len());
 
     loop {
-        terminal.draw(|frame| draw(frame, &mut app, entries))?;
+        terminal.draw(|frame| draw(frame, &mut app, labels, mailbox_entries))?;
 
         if let Event::Key(key) = event::read()? {
             match key.code {
@@ -493,31 +514,35 @@ fn run_loop(
             }
 
             if app.active == 0 {
+                // ── list view ──
+                let entries = &mailbox_entries[app.selected_mailbox];
                 match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => break,
-                    KeyCode::Char('j') | KeyCode::Down => app.list_down(),
-                    KeyCode::Char('k') | KeyCode::Up => app.list_up(),
-                    KeyCode::Home => app.list_home(),
-                    KeyCode::End => app.list_end(),
+                    KeyCode::Char('j') | KeyCode::Down => app.thread_down(mailbox_entries),
+                    KeyCode::Char('k') | KeyCode::Up => app.thread_up(),
+                    KeyCode::Home => app.thread_home(),
+                    KeyCode::End => app.thread_end(mailbox_entries),
+                    // J/K switch mailbox.
+                    KeyCode::Char('J') => app.mailbox_down(labels.len()),
+                    KeyCode::Char('K') => app.mailbox_up(),
                     KeyCode::Enter => {
-                        if let Some(ei) = app.selected_entry() {
-                            if let Ok(tab) = EmailTab::from_meta(&entries[ei].thread.data) {
+                        if let Some(ti) = app.selected_thread() {
+                            if let Ok(tab) = EmailTab::from_meta(&entries[ti].thread.data) {
                                 app.emails.push(tab);
                                 app.active = app.tab_count() - 1;
                             }
                         }
                     }
-                    // Reply from the list: load the email, reply, do not open a tab.
                     KeyCode::Char('r') => {
-                        if let Some(ei) = app.selected_entry() {
-                            if let Ok(tab) = EmailTab::from_meta(&entries[ei].thread.data) {
+                        if let Some(ti) = app.selected_thread() {
+                            if let Ok(tab) = EmailTab::from_meta(&entries[ti].thread.data) {
                                 let _ = reply(&tab, true, terminal);
                             }
                         }
                     }
                     KeyCode::Char('R') => {
-                        if let Some(ei) = app.selected_entry() {
-                            if let Ok(tab) = EmailTab::from_meta(&entries[ei].thread.data) {
+                        if let Some(ti) = app.selected_thread() {
+                            if let Ok(tab) = EmailTab::from_meta(&entries[ti].thread.data) {
                                 let _ = reply(&tab, false, terminal);
                             }
                         }
@@ -525,41 +550,36 @@ fn run_loop(
                     _ => {}
                 }
             } else {
+                // ── email tab view ──
                 let ei = app.active - 1;
                 match key.code {
                     KeyCode::Char('q') => app.close_active(),
                     KeyCode::Esc => app.active = 0,
-
-                    // r → reply quoting original body; R → reply with empty body.
                     KeyCode::Char('r') => {
                         let _ = reply(&app.emails[ei], true, terminal);
                     }
                     KeyCode::Char('R') => {
                         let _ = reply(&app.emails[ei], false, terminal);
                     }
-
-                    // Navigate to previous email in the list, replacing this tab.
-                    KeyCode::Char('K') => {
-                        app.list_up();
-                        if let Some(entry_i) = app.selected_entry() {
-                            if let Ok(new_tab) = EmailTab::from_meta(&entries[entry_i].thread.data)
-                            {
-                                app.emails[ei] = new_tab;
-                            }
-                        }
-                    }
-
-                    // Navigate to next email in the list, replacing this tab.
+                    // J/K navigate to next/prev thread in the active mailbox.
                     KeyCode::Char('J') => {
-                        app.list_down();
-                        if let Some(entry_i) = app.selected_entry() {
-                            if let Ok(new_tab) = EmailTab::from_meta(&entries[entry_i].thread.data)
-                            {
+                        app.thread_down(mailbox_entries);
+                        let entries = &mailbox_entries[app.selected_mailbox];
+                        if let Some(ti) = app.selected_thread() {
+                            if let Ok(new_tab) = EmailTab::from_meta(&entries[ti].thread.data) {
                                 app.emails[ei] = new_tab;
                             }
                         }
                     }
-
+                    KeyCode::Char('K') => {
+                        app.thread_up();
+                        let entries = &mailbox_entries[app.selected_mailbox];
+                        if let Some(ti) = app.selected_thread() {
+                            if let Ok(new_tab) = EmailTab::from_meta(&entries[ti].thread.data) {
+                                app.emails[ei] = new_tab;
+                            }
+                        }
+                    }
                     // Line scrolling.
                     KeyCode::Char('j') | KeyCode::Down => {
                         let tab = &mut app.emails[ei];
@@ -568,8 +588,6 @@ fn run_loop(
                     KeyCode::Char('k') | KeyCode::Up => {
                         app.emails[ei].scroll = app.emails[ei].scroll.saturating_sub(1);
                     }
-
-                    // Jump to first / last line.
                     KeyCode::Char('g') => {
                         app.emails[ei].scroll = 0;
                     }
@@ -577,8 +595,6 @@ fn run_loop(
                         let max = app.emails[ei].scroll_max;
                         app.emails[ei].scroll = max;
                     }
-
-                    // Half-page scrolling (15 lines).
                     KeyCode::PageUp => {
                         app.emails[ei].scroll = app.emails[ei].scroll.saturating_sub(15);
                     }
@@ -593,9 +609,9 @@ fn run_loop(
                         let tab = &mut app.emails[ei];
                         tab.scroll = tab.scroll.saturating_add(15).min(tab.scroll_max);
                     }
-
-                    KeyCode::Home => app.emails[ei].scroll = 0,
-
+                    KeyCode::Home => {
+                        app.emails[ei].scroll = 0;
+                    }
                     _ => {}
                 }
             }
@@ -607,7 +623,12 @@ fn run_loop(
 
 // ── draw ──────────────────────────────────────────────────────────────────────
 
-fn draw(frame: &mut ratatui::Frame, app: &mut App, entries: &[Entry]) {
+fn draw(
+    frame: &mut ratatui::Frame,
+    app: &mut App,
+    labels: &[&str],
+    mailbox_entries: &[Vec<Entry>],
+) {
     let area = frame.area();
 
     let chunks = Layout::default()
@@ -619,7 +640,7 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App, entries: &[Entry]) {
         ])
         .split(area);
 
-    // Tab bar.
+    // ── tab bar ──
     let mut titles: Vec<Line> = vec![Line::from(Span::raw("Threads"))];
     for e in &app.emails {
         titles.push(Line::from(truncate(&e.title, 20)));
@@ -635,14 +656,15 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App, entries: &[Entry]) {
         .divider(Span::styled(" | ", Style::default().fg(Color::DarkGray)));
     frame.render_widget(tab_bar, chunks[0]);
 
-    // Content + status bar.
+    // ── content + status bar ──
     if app.active == 0 {
-        draw_list(frame, entries, &mut app.list.list_state, chunks[1]);
-        let selected = app.list.list_state.selected().map(|i| i + 1).unwrap_or(0);
+        draw_list(frame, app, labels, mailbox_entries, chunks[1]);
+        let entries = &mailbox_entries[app.selected_mailbox];
+        let selected = app.selected_thread().map(|i| i + 1).unwrap_or(0);
         let status = Paragraph::new(format!(
-            " {}/{} — j/k ↑/↓ move  Enter open  r reply  R reply-empty  h/l ←/→ tabs  q quit",
+            " {}/{} — j/k move  J/K mailbox  Enter open  r reply  R reply-empty  h/l tabs  q quit",
             selected,
-            entries.len()
+            entries.len(),
         ))
         .style(Style::default().fg(Color::DarkGray));
         frame.render_widget(status, chunks[2]);
@@ -650,66 +672,67 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App, entries: &[Entry]) {
         let ei = app.active - 1;
         draw_email(frame, &mut app.emails[ei], chunks[1]);
         let status = Paragraph::new(
-            " j/k ↑/↓ scroll  h/l ←/→ switch tabs  J/K select email  r reply  R reply-empty  Esc back  q close",
+            " j/k scroll  J/K thread  h/l tabs  r reply  R reply-empty  Esc back  q close",
         )
         .style(Style::default().fg(Color::DarkGray));
         frame.render_widget(status, chunks[2]);
     }
 }
 
-/// Build the flat list of rows shown in the thread pane.
-///
-/// Returns the items for ratatui and a `row_to_entry` map: each element is
-/// `Some(entry_index)` for an email row or `None` for a mailbox header row.
-fn build_rows(entries: &[Entry]) -> (Vec<ListItem<'static>>, Vec<Option<usize>>) {
-    let mut items: Vec<ListItem<'static>> = Vec::new();
-    let mut row_to_entry: Vec<Option<usize>> = Vec::new();
-    let mut last_mailbox: Option<&str> = None;
-
-    for (ei, e) in entries.iter().enumerate() {
-        // Insert a header row whenever the mailbox label changes.
-        if last_mailbox != Some(e.mailbox.as_str()) {
-            last_mailbox = Some(e.mailbox.as_str());
-            items.push(ListItem::new(Line::from(vec![Span::styled(
-                format!("── {} ", e.mailbox),
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            )])));
-            row_to_entry.push(None);
-        }
-
-        let date = format_timestamp(e.thread.data.timestamp);
-        let indent = if e.depth == 0 {
-            String::new()
-        } else {
-            format!("{}└ ", "  ".repeat(e.depth - 1))
-        };
-        let subject = if e.thread.data.subject.is_empty() {
-            "(no subject)".to_string()
-        } else {
-            e.thread.data.subject.clone()
-        };
-        items.push(ListItem::new(Line::from(vec![
-            Span::styled(date, Style::default().fg(Color::Cyan)),
-            Span::styled(indent, Style::default().fg(Color::DarkGray)),
-            Span::raw(subject),
-        ])));
-        row_to_entry.push(Some(ei));
-    }
-
-    (items, row_to_entry)
-}
-
 fn draw_list(
     frame: &mut ratatui::Frame,
-    entries: &[Entry],
-    list_state: &mut ListState,
+    app: &mut App,
+    labels: &[&str],
+    mailbox_entries: &[Vec<Entry>],
     area: ratatui::layout::Rect,
 ) {
-    let (items, _) = build_rows(entries);
+    // Split horizontally: left pane for mailboxes, right pane for threads.
+    // Left pane width = longest label + 2 borders + 2 padding, min 16, max 32.
+    let left_w = (labels.iter().map(|l| l.len()).max().unwrap_or(8) + 4).clamp(16, 32) as u16;
+    let panes = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(left_w), Constraint::Min(0)])
+        .split(area);
 
-    let list = List::new(items)
+    // ── left: mailbox list ──
+    let mb_items: Vec<ListItem> = labels
+        .iter()
+        .map(|l| ListItem::new(Line::from(Span::raw(l.to_string()))))
+        .collect();
+    let mb_list = List::new(mb_items)
+        .block(Block::default().borders(Borders::ALL).title(" Mailboxes "))
+        .highlight_style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+    frame.render_stateful_widget(mb_list, panes[0], &mut app.mailbox_list_state);
+
+    // ── right: thread list for the selected mailbox ──
+    let entries = &mailbox_entries[app.selected_mailbox];
+    let items: Vec<ListItem> = entries
+        .iter()
+        .map(|e| {
+            let date = format_timestamp(e.thread.data.timestamp);
+            let indent = if e.depth == 0 {
+                String::new()
+            } else {
+                format!("{}└ ", "  ".repeat(e.depth - 1))
+            };
+            let subject = if e.thread.data.subject.is_empty() {
+                "(no subject)".to_string()
+            } else {
+                e.thread.data.subject.clone()
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(date, Style::default().fg(Color::Cyan)),
+                Span::styled(indent, Style::default().fg(Color::DarkGray)),
+                Span::raw(subject),
+            ]))
+        })
+        .collect();
+    let thread_list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title(" Threads "))
         .highlight_style(
             Style::default()
@@ -718,8 +741,11 @@ fn draw_list(
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("> ");
-
-    frame.render_stateful_widget(list, area, list_state);
+    frame.render_stateful_widget(
+        thread_list,
+        panes[1],
+        &mut app.thread_list_states[app.selected_mailbox],
+    );
 }
 
 fn draw_email(frame: &mut ratatui::Frame, tab: &mut EmailTab, area: ratatui::layout::Rect) {
