@@ -468,6 +468,21 @@ fn run_loop(
                             }
                         }
                     }
+                    // Reply from the list: load the email, reply, do not open a tab.
+                    KeyCode::Char('r') => {
+                        if let Some(i) = app.list.list_state.selected() {
+                            if let Ok(tab) = EmailTab::from_meta(&entries[i].thread.data) {
+                                let _ = reply(&tab, true, terminal);
+                            }
+                        }
+                    }
+                    KeyCode::Char('R') => {
+                        if let Some(i) = app.list.list_state.selected() {
+                            if let Ok(tab) = EmailTab::from_meta(&entries[i].thread.data) {
+                                let _ = reply(&tab, false, terminal);
+                            }
+                        }
+                    }
                     _ => {}
                 }
             } else {
@@ -586,7 +601,7 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App, entries: &[Entry]) {
         draw_list(frame, entries, &mut app.list.list_state, chunks[1]);
         let selected = app.list.list_state.selected().map(|i| i + 1).unwrap_or(0);
         let status = Paragraph::new(format!(
-            " {}/{} — j/k ↑/↓ move  Enter open  h/l ←/→ switch tabs  q quit",
+            " {}/{} — j/k ↑/↓ move  Enter open  r reply  R reply-empty  h/l ←/→ tabs  q quit",
             selected,
             entries.len()
         ))
