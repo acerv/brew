@@ -486,8 +486,8 @@ fn run_loop(
                     KeyCode::Char('q') | KeyCode::Esc => break,
                     KeyCode::Char('j') | KeyCode::Down => app.thread_down(&mailbox_entries),
                     KeyCode::Char('k') | KeyCode::Up => app.thread_up(),
-                    KeyCode::Home => app.thread_home(),
-                    KeyCode::End => app.thread_end(&mailbox_entries),
+                    KeyCode::Char('g') => app.thread_home(),
+                    KeyCode::Char('G') => app.thread_end(&mailbox_entries),
                     KeyCode::PageDown => app.thread_skip(&mailbox_entries, 15),
                     KeyCode::PageUp => app.thread_skip(&mailbox_entries, -15),
                     KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
