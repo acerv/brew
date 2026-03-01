@@ -13,106 +13,6 @@ use ratatui::{
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// Convert the full body string into a `Vec<Line>` with diff syntax highlighting.
-///
-/// Tabs are expanded to spaces (8-wide) before styling because ratatui treats
-/// tab as a zero-width control character and drops it from the output.
-fn highlight_body(body: &str) -> Vec<Line<'static>> {
-    body.lines()
-        .map(|raw| {
-            let expanded = expand_tabs(raw);
-            highlight_line_owned(expanded)
-        })
-        .collect()
-}
-
-/// Expand tab characters to 8-space tab stops.
-fn expand_tabs(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 8);
-    let mut col = 0usize;
-    for c in s.chars() {
-        if c == '\t' {
-            let spaces = 8 - (col % 8);
-            for _ in 0..spaces {
-                out.push(' ');
-            }
-            col += spaces;
-        } else {
-            out.push(c);
-            col += 1;
-        }
-    }
-    out
-}
-
-/// Takes an owned `String` and returns a syntax-highlighted `Line<'static>`.
-fn highlight_line_owned(raw: String) -> Line<'static> {
-    let style = if raw.starts_with("---") || raw.starts_with("--- ") {
-        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
-    } else if raw.starts_with("+++") || raw.starts_with("+++ ") {
-        Style::default()
-            .fg(Color::Green)
-            .add_modifier(Modifier::BOLD)
-    } else if raw.starts_with("@@") {
-        Style::default().fg(Color::Cyan)
-    } else if raw.starts_with('-') {
-        Style::default().fg(Color::Red)
-    } else if raw.starts_with('+') {
-        Style::default().fg(Color::Green)
-    } else if raw.starts_with('>') {
-        Style::default().fg(Color::Blue)
-    } else {
-        Style::default()
-    };
-    Line::from(Span::styled(raw, style))
-}
-
-/// Wrap a header field value into one or more `Line`s.
-///
-/// The label (e.g. `"From : "`) appears on the first line, and continuation
-/// lines are indented by the same width so values stay visually aligned.
-fn wrap_header_field<'a>(label: &'a str, value: &'a str, value_width: usize) -> Vec<Line<'a>> {
-    let label_style = Style::default().add_modifier(Modifier::BOLD);
-    let mut chars = value.chars();
-    let mut lines: Vec<Line<'a>> = Vec::new();
-
-    let first: String = chars.by_ref().take(value_width).collect();
-    lines.push(Line::from(vec![
-        Span::styled(label, label_style),
-        Span::raw(first),
-    ]));
-
-    let indent = " ".repeat(label.chars().count());
-    loop {
-        let chunk: String = chars.by_ref().take(value_width).collect();
-        if chunk.is_empty() {
-            break;
-        }
-        lines.push(Line::from(vec![
-            Span::raw(indent.clone()),
-            Span::raw(chunk),
-        ]));
-    }
-
-    lines
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    let mut chars = s.chars();
-    let mut out = String::with_capacity(max + 1);
-    for _ in 0..max {
-        match chars.next() {
-            Some(c) => out.push(c),
-            None => return out,
-        }
-    }
-    if chars.next().is_some() {
-        out.pop();
-        out.push('…');
-    }
-    out
-}
-
 // ── draw functions ────────────────────────────────────────────────────────────
 
 pub fn draw(
@@ -335,3 +235,106 @@ fn draw_email(frame: &mut ratatui::Frame, tab: &mut EmailTab, area: ratatui::lay
         .scroll((tab.scroll, 0));
     frame.render_widget(body, chunks[1]);
 }
+
+// ── helpers ─────────────────────────────────────────────────────────────────
+
+/// Convert the full body string into a `Vec<Line>` with diff syntax highlighting.
+///
+/// Tabs are expanded to spaces (8-wide) before styling because ratatui treats
+/// tab as a zero-width control character and drops it from the output.
+fn highlight_body(body: &str) -> Vec<Line<'static>> {
+    body.lines()
+        .map(|raw| {
+            let expanded = expand_tabs(raw);
+            highlight_line_owned(expanded)
+        })
+        .collect()
+}
+
+/// Expand tab characters to 8-space tab stops.
+fn expand_tabs(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 8);
+    let mut col = 0usize;
+    for c in s.chars() {
+        if c == '\t' {
+            let spaces = 8 - (col % 8);
+            for _ in 0..spaces {
+                out.push(' ');
+            }
+            col += spaces;
+        } else {
+            out.push(c);
+            col += 1;
+        }
+    }
+    out
+}
+
+/// Takes an owned `String` and returns a syntax-highlighted `Line<'static>`.
+fn highlight_line_owned(raw: String) -> Line<'static> {
+    let style = if raw.starts_with("---") || raw.starts_with("--- ") {
+        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+    } else if raw.starts_with("+++") || raw.starts_with("+++ ") {
+        Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD)
+    } else if raw.starts_with("@@") {
+        Style::default().fg(Color::Cyan)
+    } else if raw.starts_with('-') {
+        Style::default().fg(Color::Red)
+    } else if raw.starts_with('+') {
+        Style::default().fg(Color::Green)
+    } else if raw.starts_with('>') {
+        Style::default().fg(Color::Blue)
+    } else {
+        Style::default()
+    };
+    Line::from(Span::styled(raw, style))
+}
+
+/// Wrap a header field value into one or more `Line`s.
+///
+/// The label (e.g. `"From : "`) appears on the first line, and continuation
+/// lines are indented by the same width so values stay visually aligned.
+fn wrap_header_field<'a>(label: &'a str, value: &'a str, value_width: usize) -> Vec<Line<'a>> {
+    let label_style = Style::default().add_modifier(Modifier::BOLD);
+    let mut chars = value.chars();
+    let mut lines: Vec<Line<'a>> = Vec::new();
+
+    let first: String = chars.by_ref().take(value_width).collect();
+    lines.push(Line::from(vec![
+        Span::styled(label, label_style),
+        Span::raw(first),
+    ]));
+
+    let indent = " ".repeat(label.chars().count());
+    loop {
+        let chunk: String = chars.by_ref().take(value_width).collect();
+        if chunk.is_empty() {
+            break;
+        }
+        lines.push(Line::from(vec![
+            Span::raw(indent.clone()),
+            Span::raw(chunk),
+        ]));
+    }
+
+    lines
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    let mut chars = s.chars();
+    let mut out = String::with_capacity(max + 1);
+    for _ in 0..max {
+        match chars.next() {
+            Some(c) => out.push(c),
+            None => return out,
+        }
+    }
+    if chars.next().is_some() {
+        out.pop();
+        out.push('…');
+    }
+    out
+}
+

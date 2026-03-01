@@ -38,18 +38,6 @@ impl EmailThread {
     }
 }
 
-/// Sort `threads` descending by timestamp (latest first), then recurse into
-/// replies. Emails with no timestamp sort after all dated ones.
-fn sort_threads(threads: &mut [Rc<EmailThread>]) {
-    threads.sort_unstable_by(|a, b| {
-        // None (no date) sorts last.
-        b.data.timestamp.cmp(&a.data.timestamp)
-    });
-    for thread in threads.iter() {
-        sort_threads(&mut thread.replies.borrow_mut());
-    }
-}
-
 /// Holds the thread tree built from a Maildir folder.
 ///
 /// Use `MailCache::build` to construct it, then `load_mail` to fetch the full
@@ -204,13 +192,53 @@ impl MailCache {
 
 ////////////////////////////////////////////////////////////////////////////////
 
+/// Sort `threads` descending by timestamp (latest first), then recurse into
+/// replies. Emails with no timestamp sort after all dated ones.
+fn sort_threads(threads: &mut [Rc<EmailThread>]) {
+    threads.sort_unstable_by(|a, b| {
+        // None (no date) sorts last.
+        b.data.timestamp.cmp(&a.data.timestamp)
+    });
+    for thread in threads.iter() {
+        sort_threads(&mut thread.replies.borrow_mut());
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn test_maildir() -> Option<String> {
+        std::env::var("BREW_TEST_MAILDIR").ok()
+    }
+
     #[test]
     fn test_build_threads() {
-        let cache = MailCache::build("/home/acer/Mail/LTP/").unwrap();
+        let dir = match test_maildir() {
+            Some(d) => d,
+            None => {
+                eprintln!("skipped: set BREW_TEST_MAILDIR to run this test");
+                return;
+            }
+        };
+        let cache = MailCache::build(&dir).unwrap();
         dbg!(cache.threads.len());
+    }
+
+    #[test]
+    fn test_load_mail() {
+        let dir = match test_maildir() {
+            Some(d) => d,
+            None => {
+                eprintln!("skipped: set BREW_TEST_MAILDIR to run this test");
+                return;
+            }
+        };
+        let cache = MailCache::build(&dir).unwrap();
+        if let Some(thread) = cache.threads.first() {
+            let msg = MailCache::load_mail(&thread.data.path).unwrap();
+            assert_eq!(msg.message_id(), Some(thread.data.message_id.as_str()));
+        }
     }
 }

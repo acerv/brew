@@ -8,25 +8,6 @@ use super::utils::format_timestamp;
 
 /// Format an address list (From / To / Cc) into a single comma-separated string.
 /// Returns `"—"` when the header is absent.
-fn format_addr_list(list: Option<&mail_parser::Address>) -> String {
-    list.map(|addrs| {
-        addrs
-            .iter()
-            .map(|a| {
-                let name = a.name().unwrap_or_default();
-                let addr = a.address().unwrap_or_default();
-                if name.is_empty() {
-                    addr.to_string()
-                } else {
-                    format!("{} <{}>", name, addr)
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(", ")
-    })
-    .unwrap_or_else(|| "—".to_string())
-}
-
 pub struct EmailTab {
     pub title: String,
     pub from: String,
@@ -81,3 +62,25 @@ impl EmailTab {
         })
     }
 }
+
+// ── helpers ─────────────────────────────────────────────────────────────────
+
+fn format_addr_list(list: Option<&mail_parser::Address>) -> String {
+    list.map(|addrs| {
+        addrs
+            .iter()
+            .map(|a| {
+                let name = a.name().unwrap_or_default();
+                let addr = a.address().unwrap_or_default();
+                if name.is_empty() {
+                    addr.to_string()
+                } else {
+                    format!("{} <{}>", name, addr)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    })
+    .unwrap_or_else(|| "—".to_string())
+}
+
