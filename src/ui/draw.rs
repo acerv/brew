@@ -50,6 +50,7 @@ pub fn draw(
     // ── content + status bar ──
     if app.active == 0 {
         let sel = app.selected_mailbox;
+        let unread_only = app.unread_only[sel];
         draw_list(
             frame,
             sel,
@@ -59,13 +60,16 @@ pub fn draw(
             mailbox_entries,
             chunks[1],
             &app.seen_paths,
+            unread_only,
         );
         let entries = &mailbox_entries[sel];
         let selected = app.selected_thread().map(|i| i + 1).unwrap_or(0);
+        let filter_hint = if unread_only { "  [unread]" } else { "" };
         let status = Paragraph::new(format!(
-            " {}/{} — j/k move  J/K mailbox  Enter open  r reply  R reply-empty  t thanks  h/l tabs  q quit",
+            " {}/{}{} — j/k move  J/K mailbox  Enter open  r reply  R reply-empty  t thanks  N unread-only  n all  h/l tabs  q quit",
             selected,
             entries.len(),
+            filter_hint,
         ))
         .style(Style::default().fg(Color::DarkGray));
         frame.render_widget(status, chunks[2]);
@@ -89,6 +93,7 @@ fn draw_list(
     mailbox_entries: &[Vec<Entry>],
     area: ratatui::layout::Rect,
     seen_paths: &HashMap<String, PathBuf>,
+    unread_only: bool,
 ) {
     let left_w = (labels.iter().map(|l| l.len()).max().unwrap_or(8) + 10).clamp(16, 40) as u16;
     let panes = Layout::default()
@@ -124,8 +129,9 @@ fn draw_list(
             ListItem::new(Line::from(Span::styled(text, style)))
         })
         .collect();
+    let filter_marker = if unread_only { " Mailbox [unread] " } else { " Mailbox " };
     let mb_list = List::new(mb_items)
-        .block(Block::default().borders(Borders::ALL).title(" Mailbox "))
+        .block(Block::default().borders(Borders::ALL).title(filter_marker))
         .highlight_style(
             Style::default()
                 .fg(Color::Yellow)

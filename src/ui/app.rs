@@ -3,7 +3,7 @@
 use crate::core::cache::EmailThread;
 use crate::core::cache::MailCache;
 use crate::core::config::{Mailbox, Smtp, load_signature, load_thanks};
-use crate::core::read::mark_seen;
+use crate::core::read::{is_unread, mark_seen};
 use anyhow::Result;
 use crossterm::{
     event::{self, Event, KeyCode, KeyModifiers},
@@ -57,6 +57,9 @@ pub struct App {
     /// (keyed by Message-ID). The cache holds the original pre-rename path;
     /// this map overrides it so re-opening an already-read email works.
     pub seen_paths: HashMap<String, PathBuf>,
+    /// Per-mailbox filter flag: when `true` the thread list shows only unread
+    /// emails. Toggled with `N` (enable) and `n` (disable).
+    pub unread_only: Vec<bool>,
 }
 
 impl App {
@@ -79,6 +82,7 @@ impl App {
             mailbox_list_state,
             thread_list_states,
             seen_paths: HashMap::new(),
+            unread_only: vec![false; mailbox_count],
         }
     }
 
@@ -311,6 +315,36 @@ fn run_loop(
     let mut mailbox_entries = flatten_all(&caches);
     let mut app = App::new(labels.len());
 
+    // `filtered_entries` is the view actually shown and navigated.
+    // It equals `mailbox_entries` when unread_only[i] is false, and is
+    // filtered to unread emails only when true.
+    let apply_filter = |entries: &[Vec<Entry>], app: &App, seen: &HashMap<String, PathBuf>| -> Vec<Vec<Entry>> {
+        entries
+            .iter()
+            .enumerate()
+            .map(|(i, v)| {
+                if app.unread_only[i] {
+                    v.iter()
+                        .filter(|e| {
+                            let eff = seen
+                                .get(&e.thread.data.message_id)
+                                .map(|p| p.as_path())
+                                .unwrap_or(&e.thread.data.path);
+                            is_unread(eff)
+                        })
+                        .map(|e| Entry { depth: e.depth, thread: e.thread.clone() })
+                        .collect()
+                } else {
+                    v.iter()
+                        .map(|e| Entry { depth: e.depth, thread: e.thread.clone() })
+                        .collect()
+                }
+            })
+            .collect()
+    };
+
+    let mut filtered_entries = apply_filter(&mailbox_entries, &app, &app.seen_paths.clone());
+
     loop {
         // Drain all pending filesystem events and apply them incrementally.
         let mut changed: Vec<bool> = vec![false; mailbox_cfgs.len()];
@@ -366,14 +400,33 @@ fn run_loop(
             }
         }
 
-        // Re-flatten only the mailboxes that actually changed.
+        // Re-flatten only the mailboxes that actually changed, then re-filter.
         for (i, did_change) in changed.iter().enumerate() {
             if *did_change {
                 let mut v = Vec::new();
                 flatten(&caches[i].threads, 0, &mut v);
                 mailbox_entries[i] = v;
-                // Clamp selection if the list shrank.
-                let len = mailbox_entries[i].len();
+                // Re-apply the unread filter for this mailbox.
+                filtered_entries[i] = if app.unread_only[i] {
+                    mailbox_entries[i]
+                        .iter()
+                        .filter(|e| {
+                            let eff = app.seen_paths
+                                .get(&e.thread.data.message_id)
+                                .map(|p| p.as_path())
+                                .unwrap_or(&e.thread.data.path);
+                            is_unread(eff)
+                        })
+                        .map(|e| Entry { depth: e.depth, thread: e.thread.clone() })
+                        .collect()
+                } else {
+                    mailbox_entries[i]
+                        .iter()
+                        .map(|e| Entry { depth: e.depth, thread: e.thread.clone() })
+                        .collect()
+                };
+                // Clamp selection if the visible list shrank.
+                let len = filtered_entries[i].len();
                 if let Some(sel) = app.thread_list_states[i].selected()
                     && sel >= len
                     && len > 0
@@ -385,7 +438,7 @@ fn run_loop(
             }
         }
 
-        terminal.draw(|frame| draw(frame, &mut app, &labels, &mailbox_entries))?;
+        terminal.draw(|frame| draw(frame, &mut app, &labels, &filtered_entries))?;
 
         if !event::poll(std::time::Duration::from_secs(1))? {
             continue;
@@ -414,7 +467,7 @@ fn run_loop(
 
             if app.active == 0 {
                 // ── list view ──
-                let entries = &mailbox_entries[app.selected_mailbox];
+                let entries = &filtered_entries[app.selected_mailbox];
                 match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => break,
                     KeyCode::Char('j') | KeyCode::Down => app.thread_down(&mailbox_entries),
@@ -458,6 +511,35 @@ fn run_loop(
                         if let Some(eff_path) = app.effective_path(entries) {
                             delete_mail(eff_path);
                         }
+                    }
+                    KeyCode::Char('N') => {
+                        let mb = app.selected_mailbox;
+                        app.unread_only[mb] = true;
+                        filtered_entries[mb] = mailbox_entries[mb]
+                            .iter()
+                            .filter(|e| {
+                                let eff = app.seen_paths
+                                    .get(&e.thread.data.message_id)
+                                    .map(|p| p.as_path())
+                                    .unwrap_or(&e.thread.data.path);
+                                is_unread(eff)
+                            })
+                            .map(|e| Entry { depth: e.depth, thread: e.thread.clone() })
+                            .collect();
+                        // Reset selection to the first entry.
+                        let len = filtered_entries[mb].len();
+                        app.thread_list_states[mb].select(if len > 0 { Some(0) } else { None });
+                    }
+                    KeyCode::Char('n') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        let mb = app.selected_mailbox;
+                        app.unread_only[mb] = false;
+                        filtered_entries[mb] = mailbox_entries[mb]
+                            .iter()
+                            .map(|e| Entry { depth: e.depth, thread: e.thread.clone() })
+                            .collect();
+                        // Reset selection to the first entry.
+                        let len = filtered_entries[mb].len();
+                        app.thread_list_states[mb].select(if len > 0 { Some(0) } else { None });
                     }
                     _ => {}
                 }
