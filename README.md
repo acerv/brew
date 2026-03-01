@@ -21,6 +21,7 @@ Create `~/.config/brew/config.toml`:
 [smtp]
 host     = "smtp.gmail.com"
 port     = 587
+name     = "Name Surname"
 username = "you@example.com"
 password = "app-password"
 
@@ -47,8 +48,8 @@ Optional files (plain text, loaded from `~/.config/brew/`):
 | Key                   | Action                  |
 | --------------------- | ----------------------- |
 | `j` / `k`             | Move down / up          |
-| `Home`                | Jump to top             |
-| `End`                 | Jump to bottom          |
+| `g`                   | Jump to top             |
+| `G`                   | Jump to bottom          |
 | `PageDown` / `Ctrl+D` | Skip 15 down            |
 | `PageUp` / `Ctrl+U`   | Skip 15 up              |
 | `J` / `K`             | Next / previous mailbox |
