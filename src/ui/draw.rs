@@ -129,7 +129,11 @@ fn draw_list(
             ListItem::new(Line::from(Span::styled(text, style)))
         })
         .collect();
-    let filter_marker = if unread_only { " Mailbox [unread] " } else { " Mailbox " };
+    let filter_marker = if unread_only {
+        " Mailbox [unread] "
+    } else {
+        " Mailbox "
+    };
     let mb_list = List::new(mb_items)
         .block(Block::default().borders(Borders::ALL).title(filter_marker))
         .highlight_style(

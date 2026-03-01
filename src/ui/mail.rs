@@ -67,6 +67,100 @@ pub fn thanks_reply(
     compose_and_send(tab, &body_content, "thanks", signature, smtp, terminal)
 }
 
+/// Open the editor with a blank new-mail draft and send on confirmation.
+///
+/// The draft contains empty `To:` and `Subject:` headers followed by
+/// [`BODY_SENTINEL`] and an optional signature.  The user fills everything in;
+/// `To:`, `Subject:`, and `Cc:` are read back from the saved file before
+/// sending.
+pub fn compose_new(
+    signature: Option<&str>,
+    smtp: &Smtp,
+    terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>,
+) -> Result<()> {
+    let mut draft = String::new();
+    draft.push_str("To: \n");
+    draft.push_str("Subject: \n");
+    draft.push_str(BODY_SENTINEL);
+    draft.push('\n');
+    if let Some(sig) = signature {
+        draft.push_str("--\n");
+        draft.push_str(sig.trim_end());
+        draft.push('\n');
+    }
+
+    let tmp_path = std::env::temp_dir().join(format!("mail-new-{}.eml", std::process::id()));
+    {
+        let mut f = std::fs::File::create(&tmp_path)?;
+        f.write_all(draft.as_bytes())?;
+    }
+
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+
+    let editor = std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .unwrap_or_else(|_| "vim".to_string());
+
+    // Position cursor at the end of the To: line so the user can type right away.
+    Command::new(&editor).arg("+1").arg(&tmp_path).status()?;
+
+    let edited = std::fs::read_to_string(&tmp_path)?;
+    let _ = std::fs::remove_file(&tmp_path);
+
+    enable_raw_mode()?;
+    execute!(terminal.backend_mut(), EnterAlternateScreen)?;
+    terminal.clear()?;
+
+    // Parse headers written by the user above the sentinel.
+    let mut to_addrs: Vec<String> = Vec::new();
+    let mut cc_addrs: Vec<String> = Vec::new();
+    let mut subject = String::new();
+
+    for line in edited.lines() {
+        if line == BODY_SENTINEL {
+            break;
+        }
+        if let Some(val) = line.strip_prefix("To:") {
+            for a in val.split(',').filter_map(|s| bare_address(s.trim())) {
+                to_addrs.push(a.to_string());
+            }
+        } else if let Some(val) = line.strip_prefix("Cc:") {
+            for a in val.split(',').filter_map(|s| bare_address(s.trim())) {
+                cc_addrs.push(a.to_string());
+            }
+        } else if let Some(val) = line.strip_prefix("Subject:") {
+            subject = val.trim().to_string();
+        }
+    }
+
+    // Silently abort if the user left To: empty.
+    if to_addrs.is_empty() {
+        return Ok(());
+    }
+
+    if !confirm_send(terminal)? {
+        return Ok(());
+    }
+
+    // Extract body: everything after the BODY_SENTINEL line.
+    let body = edited
+        .lines()
+        .enumerate()
+        .find(|(_, l)| *l == BODY_SENTINEL)
+        .map(|(i, _)| edited.lines().skip(i + 1).collect::<Vec<_>>().join("\n"))
+        .unwrap_or_default();
+    let body = body.trim_start_matches('\n');
+
+    let to_refs: Vec<&str> = to_addrs.iter().map(|s| s.as_str()).collect();
+    let cc_refs: Vec<&str> = cc_addrs.iter().map(|s| s.as_str()).collect();
+    if let Err(e) = send_message(smtp, &to_refs, &cc_refs, &subject, body) {
+        show_error(&e.to_string(), terminal)?;
+    }
+
+    Ok(())
+}
+
 /// Core compose-and-send routine shared by [`reply`] and [`thanks_reply`].
 ///
 /// Builds a draft file containing the headers, the [`BODY_SENTINEL`] line,

@@ -56,6 +56,7 @@ Optional files (plain text, loaded from `~/.config/brew/`):
 | `r`                   | Reply-all (quoted)      |
 | `R`                   | Reply-all (blank)       |
 | `t`                   | Send thanks reply       |
+| `C`                   | Compose new email       |
 | `N`                   | Show unread only        |
 | `n`                   | Show all emails         |
 | `D`                   | Delete email            |

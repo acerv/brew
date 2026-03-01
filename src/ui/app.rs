@@ -21,7 +21,7 @@ use std::rc::Rc;
 use std::sync::mpsc;
 
 use super::draw::draw;
-use super::mail::{delete_mail, reply, thanks_reply};
+use super::mail::{compose_new, delete_mail, reply, thanks_reply};
 use super::tab::EmailTab;
 
 // ── flat list entry ───────────────────────────────────────────────────────────
@@ -561,6 +561,9 @@ fn run_loop(
                         // Reset selection to the first entry.
                         let len = filtered_entries[mb].len();
                         app.thread_list_states[mb].select(if len > 0 { Some(0) } else { None });
+                    }
+                    KeyCode::Char('C') => {
+                        let _ = compose_new(signature, smtp, terminal);
                     }
                     _ => {}
                 }
