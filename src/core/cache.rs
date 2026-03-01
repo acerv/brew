@@ -222,7 +222,7 @@ mod tests {
             }
         };
         let cache = MailCache::build(&dir).unwrap();
-        dbg!(cache.threads.len());
+        assert!(!cache.threads.is_empty(), "expected at least one thread");
     }
 
     #[test]

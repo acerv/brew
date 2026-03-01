@@ -58,7 +58,7 @@ impl EmailTab {
             message_id,
             path: path.to_path_buf(),
             scroll: 0,
-            scroll_max: u16::MAX,
+            scroll_max: 0,
         })
     }
 }

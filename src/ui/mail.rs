@@ -22,7 +22,12 @@ use super::tab::EmailTab;
 
 // ── reply ─────────────────────────────────────────────────────────────────────
 
-/// Build a reply draft, open vim, ask for confirmation, then send via SMTP.
+/// The sentinel line that separates draft headers from body in the temp file.
+/// Chosen to be distinctive enough that it cannot plausibly appear in a
+/// real header value, avoiding the fragility of a bare `--`.
+const BODY_SENTINEL: &str = "--- body ---";
+
+/// Build a reply draft, open the editor, ask for confirmation, then send.
 ///
 /// Reply-all: To = original sender + original To (minus self);
 ///            Cc = original Cc (minus self).
@@ -31,6 +36,48 @@ use super::tab::EmailTab;
 pub fn reply(
     tab: &EmailTab,
     quote: bool,
+    signature: Option<&str>,
+    smtp: &Smtp,
+    terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>,
+) -> Result<()> {
+    let body_content = if quote {
+        let mut s = String::new();
+        for line in tab.body.lines() {
+            s.push_str(&format!("> {}\n", line));
+        }
+        s
+    } else {
+        String::new()
+    };
+    compose_and_send(tab, &body_content, "reply", signature, smtp, terminal)
+}
+
+/// Send a pre-written thanks reply.
+///
+/// Opens the editor pre-filled with the thanks file content so the user can
+/// review it before sending.
+pub fn thanks_reply(
+    tab: &EmailTab,
+    thanks: &str,
+    signature: Option<&str>,
+    smtp: &Smtp,
+    terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>,
+) -> Result<()> {
+    let body_content = format!("{}\n", thanks.trim_end());
+    compose_and_send(tab, &body_content, "thanks", signature, smtp, terminal)
+}
+
+/// Core compose-and-send routine shared by [`reply`] and [`thanks_reply`].
+///
+/// Builds a draft file containing the headers, the [`BODY_SENTINEL`] line,
+/// and `body_content`; opens the editor; then parses and sends on confirmation.
+///
+/// `tmp_suffix` is a short string embedded in the temp-file name for
+/// disambiguation (e.g. `"reply"` or `"thanks"`).
+fn compose_and_send(
+    tab: &EmailTab,
+    body_content: &str,
+    tmp_suffix: &str,
     signature: Option<&str>,
     smtp: &Smtp,
     terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>,
@@ -65,20 +112,17 @@ pub fn reply(
         draft.push_str(&format!("In-Reply-To: <{}>\n", mid));
         header_count += 1;
     }
-    draft.push_str("--\n");
+    draft.push_str(BODY_SENTINEL);
     draft.push('\n');
-    if quote {
-        for line in tab.body.lines() {
-            draft.push_str(&format!("> {}\n", line));
-        }
-    }
+    draft.push_str(body_content);
     if let Some(sig) = signature {
         draft.push_str("--\n");
         draft.push_str(sig.trim_end());
         draft.push('\n');
     }
 
-    let tmp_path = std::env::temp_dir().join(format!("mail-reply-{}.eml", std::process::id()));
+    let tmp_path =
+        std::env::temp_dir().join(format!("mail-{}-{}.eml", tmp_suffix, std::process::id()));
     {
         let mut f = std::fs::File::create(&tmp_path)?;
         f.write_all(draft.as_bytes())?;
@@ -91,103 +135,7 @@ pub fn reply(
         .or_else(|_| std::env::var("EDITOR"))
         .unwrap_or_else(|_| "vim".to_string());
 
-    let reply_line = header_count + 2;
-    Command::new(&editor)
-        .arg(format!("+{}", reply_line))
-        .arg(&tmp_path)
-        .status()?;
-
-    let edited = std::fs::read_to_string(&tmp_path)?;
-    let _ = std::fs::remove_file(&tmp_path);
-
-    enable_raw_mode()?;
-    execute!(terminal.backend_mut(), EnterAlternateScreen)?;
-    terminal.clear()?;
-
-    if !confirm_send(terminal)? {
-        return Ok(());
-    }
-
-    let body = edited
-        .lines()
-        .enumerate()
-        .find(|(_, l)| *l == "--")
-        .map(|(i, _)| edited.lines().skip(i + 1).collect::<Vec<_>>().join("\n"))
-        .unwrap_or_else(|| edited.clone());
-    let body = body.trim_start_matches('\n');
-
-    let to_refs: Vec<&str> = to_addrs.iter().map(|s| s.as_str()).collect();
-    let cc_refs: Vec<&str> = cc_addrs.iter().map(|s| s.as_str()).collect();
-    if let Err(e) = send_message(smtp, &to_refs, &cc_refs, &subject, body) {
-        show_error(&e.to_string(), terminal)?;
-    }
-
-    Ok(())
-}
-
-/// Send a pre-written thanks reply.
-///
-/// Opens the editor pre-filled with the thanks file content so the user can
-/// review it before sending.
-pub fn thanks_reply(
-    tab: &EmailTab,
-    thanks: &str,
-    signature: Option<&str>,
-    smtp: &Smtp,
-    terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>,
-) -> Result<()> {
-    let self_addr = smtp.username.as_str();
-    let mut to_addrs: Vec<String> = bare_address(&tab.from)
-        .map(str::to_string)
-        .into_iter()
-        .collect();
-    for a in split_addresses(&tab.to, self_addr) {
-        if !to_addrs.iter().any(|x| x.eq_ignore_ascii_case(&a)) {
-            to_addrs.push(a);
-        }
-    }
-    let cc_addrs = split_addresses(&tab.cc, self_addr);
-
-    let subject = if tab.title.starts_with("Re:") || tab.title.starts_with("re:") {
-        tab.title.clone()
-    } else {
-        format!("Re: {}", tab.title)
-    };
-
-    let mut header_count = 2usize;
-    let mut draft = String::new();
-    draft.push_str(&format!("To: {}\n", to_addrs.join(", ")));
-    draft.push_str(&format!("Subject: {}\n", subject));
-    if !cc_addrs.is_empty() {
-        draft.push_str(&format!("Cc: {}\n", cc_addrs.join(", ")));
-        header_count += 1;
-    }
-    if let Some(ref mid) = tab.message_id {
-        draft.push_str(&format!("In-Reply-To: <{}>\n", mid));
-        header_count += 1;
-    }
-    draft.push_str("--\n");
-    draft.push_str(thanks.trim_end());
-    draft.push('\n');
-    if let Some(sig) = signature {
-        draft.push_str("--\n");
-        draft.push_str(sig.trim_end());
-        draft.push('\n');
-    }
-
-    let tmp_path = std::env::temp_dir().join(format!("mail-thanks-{}.eml", std::process::id()));
-    {
-        let mut f = std::fs::File::create(&tmp_path)?;
-        f.write_all(draft.as_bytes())?;
-    }
-
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-
-    let editor = std::env::var("VISUAL")
-        .or_else(|_| std::env::var("EDITOR"))
-        .unwrap_or_else(|_| "vim".to_string());
-
+    // Position the cursor at the first body line (after headers + sentinel).
     let body_line = header_count + 2;
     Command::new(&editor)
         .arg(format!("+{}", body_line))
@@ -205,10 +153,11 @@ pub fn thanks_reply(
         return Ok(());
     }
 
+    // Extract the body: everything after the BODY_SENTINEL line.
     let body = edited
         .lines()
         .enumerate()
-        .find(|(_, l)| *l == "--")
+        .find(|(_, l)| *l == BODY_SENTINEL)
         .map(|(i, _)| edited.lines().skip(i + 1).collect::<Vec<_>>().join("\n"))
         .unwrap_or_else(|| edited.clone());
     let body = body.trim_start_matches('\n');
@@ -289,8 +238,7 @@ fn show_error(
     let popup_h: u16 = (wrapped.len() + 4) as u16;
 
     loop {
-        let lines_clone = wrapped.clone();
-        terminal.draw(move |frame| {
+        terminal.draw(|frame| {
             let area = frame.area();
             let x = area.width.saturating_sub(popup_w) / 2;
             let y = area.height.saturating_sub(popup_h) / 2;
@@ -307,9 +255,9 @@ fn show_error(
             let inner = block.inner(popup_area);
             frame.render_widget(block, popup_area);
 
-            let mut text: Vec<Line> = lines_clone
+            let mut text: Vec<Line> = wrapped
                 .iter()
-                .map(|l| Line::from(Span::styled(l.clone(), Style::default().fg(Color::Red))))
+                .map(|l| Line::from(Span::styled(l.as_str(), Style::default().fg(Color::Red))))
                 .collect();
             text.push(Line::from(""));
             text.push(Line::from(Span::styled(

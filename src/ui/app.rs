@@ -67,15 +67,13 @@ impl App {
         if mailbox_count > 0 {
             mailbox_list_state.select(Some(0));
         }
-        let mut thread_list_states: Vec<ListState> = (0..mailbox_count)
+        let thread_list_states: Vec<ListState> = (0..mailbox_count)
             .map(|_| {
                 let mut s = ListState::default();
                 s.select(Some(0));
                 s
             })
             .collect();
-        // Don't select anything if there are no threads (handled at draw time).
-        let _ = thread_list_states.first_mut();
         Self {
             active: 0,
             emails: Vec::new(),
@@ -185,6 +183,39 @@ impl App {
             self.selected_mailbox -= 1;
             self.mailbox_list_state.select(Some(self.selected_mailbox));
         }
+    }
+
+    /// Resolve the effective on-disk path for the currently selected thread,
+    /// accounting for any `mark_seen` rename stored in `seen_paths`.
+    /// Returns `None` when there is no thread selected or the mailbox is empty.
+    pub fn effective_path<'a>(&'a self, entries: &'a [Entry]) -> Option<&'a std::path::Path> {
+        let ti = self.selected_thread()?;
+        let meta = &entries.get(ti)?.thread.data;
+        Some(
+            self.seen_paths
+                .get(&meta.message_id)
+                .map(|p| p.as_path())
+                .unwrap_or(&meta.path),
+        )
+    }
+
+    /// Load and mark-seen the currently selected thread, returning the
+    /// resulting [`EmailTab`] and its new on-disk path.
+    /// Returns `None` when there is no selection or loading fails.
+    pub fn resolve_selected(&mut self, entries: &[Entry]) -> Option<EmailTab> {
+        let ti = self.selected_thread()?;
+        let meta = &entries.get(ti)?.thread.data;
+        let eff_path = self
+            .seen_paths
+            .get(&meta.message_id)
+            .map(|p| p.as_path())
+            .unwrap_or(&meta.path);
+        let mut tab = EmailTab::from_meta_at(meta, eff_path).ok()?;
+        let new_path = mark_seen(&tab.path);
+        self.seen_paths
+            .insert(meta.message_id.clone(), new_path.clone());
+        tab.path = new_path;
+        Some(tab)
     }
 }
 
@@ -320,82 +351,30 @@ fn run_loop(
                     KeyCode::Char('J') => app.mailbox_down(labels.len()),
                     KeyCode::Char('K') => app.mailbox_up(),
                     KeyCode::Enter => {
-                        if let Some(ti) = app.selected_thread() {
-                            let meta = &entries[ti].thread.data;
-                            let eff_path = app
-                                .seen_paths
-                                .get(&meta.message_id)
-                                .map(|p| p.as_path())
-                                .unwrap_or(&meta.path);
-                            if let Ok(mut tab) = EmailTab::from_meta_at(meta, eff_path) {
-                                let new_path = mark_seen(&tab.path);
-                                app.seen_paths
-                                    .insert(meta.message_id.clone(), new_path.clone());
-                                tab.path = new_path;
-                                app.emails.push(tab);
-                                app.active = app.tab_count() - 1;
-                            }
+                        if let Some(tab) = app.resolve_selected(entries) {
+                            app.emails.push(tab);
+                            app.active = app.tab_count() - 1;
                         }
                     }
                     KeyCode::Char('r') => {
-                        if let Some(ti) = app.selected_thread() {
-                            let meta = &entries[ti].thread.data;
-                            let eff_path = app
-                                .seen_paths
-                                .get(&meta.message_id)
-                                .map(|p| p.as_path())
-                                .unwrap_or(&meta.path);
-                            if let Ok(mut tab) = EmailTab::from_meta_at(meta, eff_path) {
-                                let new_path = mark_seen(&tab.path);
-                                app.seen_paths
-                                    .insert(meta.message_id.clone(), new_path.clone());
-                                tab.path = new_path;
-                                let _ = reply(&tab, true, signature, smtp, terminal);
-                            }
+                        if let Some(tab) = app.resolve_selected(entries) {
+                            let _ = reply(&tab, true, signature, smtp, terminal);
                         }
                     }
                     KeyCode::Char('R') => {
-                        if let Some(ti) = app.selected_thread() {
-                            let meta = &entries[ti].thread.data;
-                            let eff_path = app
-                                .seen_paths
-                                .get(&meta.message_id)
-                                .map(|p| p.as_path())
-                                .unwrap_or(&meta.path);
-                            if let Ok(mut tab) = EmailTab::from_meta_at(meta, eff_path) {
-                                let new_path = mark_seen(&tab.path);
-                                app.seen_paths
-                                    .insert(meta.message_id.clone(), new_path.clone());
-                                tab.path = new_path;
-                                let _ = reply(&tab, false, signature, smtp, terminal);
-                            }
+                        if let Some(tab) = app.resolve_selected(entries) {
+                            let _ = reply(&tab, false, signature, smtp, terminal);
                         }
                     }
                     KeyCode::Char('t') => {
-                        if let (Some(thanks_body), Some(ti)) = (thanks, app.selected_thread()) {
-                            let meta = &entries[ti].thread.data;
-                            let eff_path = app
-                                .seen_paths
-                                .get(&meta.message_id)
-                                .map(|p| p.as_path())
-                                .unwrap_or(&meta.path);
-                            if let Ok(mut tab) = EmailTab::from_meta_at(meta, eff_path) {
-                                let new_path = mark_seen(&tab.path);
-                                app.seen_paths
-                                    .insert(meta.message_id.clone(), new_path.clone());
-                                tab.path = new_path;
-                                let _ = thanks_reply(&tab, thanks_body, signature, smtp, terminal);
-                            }
+                        if let Some(thanks_body) = thanks
+                            && let Some(tab) = app.resolve_selected(entries)
+                        {
+                            let _ = thanks_reply(&tab, thanks_body, signature, smtp, terminal);
                         }
                     }
                     KeyCode::Char('D') => {
-                        if let Some(ti) = app.selected_thread() {
-                            let meta = &entries[ti].thread.data;
-                            let eff_path = app
-                                .seen_paths
-                                .get(&meta.message_id)
-                                .map(|p| p.as_path())
-                                .unwrap_or(&meta.path);
+                        if let Some(eff_path) = app.effective_path(entries) {
                             delete_mail(eff_path);
                         }
                     }
@@ -432,39 +411,15 @@ fn run_loop(
                     KeyCode::Char('J') => {
                         app.thread_down(&mailbox_entries);
                         let entries = &mailbox_entries[app.selected_mailbox];
-                        if let Some(ti) = app.selected_thread() {
-                            let meta = &entries[ti].thread.data;
-                            let eff_path = app
-                                .seen_paths
-                                .get(&meta.message_id)
-                                .map(|p| p.as_path())
-                                .unwrap_or(&meta.path);
-                            if let Ok(mut new_tab) = EmailTab::from_meta_at(meta, eff_path) {
-                                let new_path = mark_seen(&new_tab.path);
-                                app.seen_paths
-                                    .insert(meta.message_id.clone(), new_path.clone());
-                                new_tab.path = new_path;
-                                app.emails[ei] = new_tab;
-                            }
+                        if let Some(new_tab) = app.resolve_selected(entries) {
+                            app.emails[ei] = new_tab;
                         }
                     }
                     KeyCode::Char('K') => {
                         app.thread_up();
                         let entries = &mailbox_entries[app.selected_mailbox];
-                        if let Some(ti) = app.selected_thread() {
-                            let meta = &entries[ti].thread.data;
-                            let eff_path = app
-                                .seen_paths
-                                .get(&meta.message_id)
-                                .map(|p| p.as_path())
-                                .unwrap_or(&meta.path);
-                            if let Ok(mut new_tab) = EmailTab::from_meta_at(meta, eff_path) {
-                                let new_path = mark_seen(&new_tab.path);
-                                app.seen_paths
-                                    .insert(meta.message_id.clone(), new_path.clone());
-                                new_tab.path = new_path;
-                                app.emails[ei] = new_tab;
-                            }
+                        if let Some(new_tab) = app.resolve_selected(entries) {
+                            app.emails[ei] = new_tab;
                         }
                     }
                     KeyCode::Char('j') | KeyCode::Down => {
