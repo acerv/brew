@@ -14,6 +14,17 @@ use std::path::PathBuf;
 
 // ── draw functions ────────────────────────────────────────────────────────────
 
+/// Groups the mutable list-view state passed from [`App`] into [`draw_list`].
+struct ListViewState<'a> {
+    selected_mailbox: usize,
+    mailbox_list_state: &'a mut ratatui::widgets::ListState,
+    thread_list_state: &'a mut ratatui::widgets::ListState,
+    labels: &'a [&'a str],
+    mailbox_entries: &'a [Vec<Entry>],
+    seen_paths: &'a HashMap<String, PathBuf>,
+    unread_only: bool,
+}
+
 pub fn draw(
     frame: &mut ratatui::Frame,
     app: &mut App,
@@ -53,14 +64,16 @@ pub fn draw(
         let unread_only = app.unread_only[sel];
         draw_list(
             frame,
-            sel,
-            &mut app.mailbox_list_state,
-            &mut app.thread_list_states[sel],
-            labels,
-            mailbox_entries,
             chunks[1],
-            &app.seen_paths,
-            unread_only,
+            ListViewState {
+                selected_mailbox: sel,
+                mailbox_list_state: &mut app.mailbox_list_state,
+                thread_list_state: &mut app.thread_list_states[sel],
+                labels,
+                mailbox_entries,
+                seen_paths: &app.seen_paths,
+                unread_only,
+            },
         );
         let entries = &mailbox_entries[sel];
         let selected = app.selected_thread().map(|i| i + 1).unwrap_or(0);
@@ -84,17 +97,16 @@ pub fn draw(
     }
 }
 
-fn draw_list(
-    frame: &mut ratatui::Frame,
-    selected_mailbox: usize,
-    mailbox_list_state: &mut ratatui::widgets::ListState,
-    thread_list_state: &mut ratatui::widgets::ListState,
-    labels: &[&str],
-    mailbox_entries: &[Vec<Entry>],
-    area: ratatui::layout::Rect,
-    seen_paths: &HashMap<String, PathBuf>,
-    unread_only: bool,
-) {
+fn draw_list(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, state: ListViewState<'_>) {
+    let ListViewState {
+        selected_mailbox,
+        mailbox_list_state,
+        thread_list_state,
+        labels,
+        mailbox_entries,
+        seen_paths,
+        unread_only,
+    } = state;
     let left_w = (labels.iter().map(|l| l.len()).max().unwrap_or(8) + 18).clamp(16, 40) as u16;
     let panes = Layout::default()
         .direction(Direction::Horizontal)
