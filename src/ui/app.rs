@@ -368,6 +368,9 @@ fn run_loop(
 
     let mut filtered_entries = apply_filter(&mailbox_entries, &app, &app.seen_paths.clone());
 
+    let tick = std::time::Duration::from_secs(60);
+    let mut last_tick = std::time::Instant::now();
+
     loop {
         // Drain sync results: None = success (clear error), Some(msg) = failure.
         for msg in sync_rx.try_iter() {
@@ -475,7 +478,9 @@ fn run_loop(
 
         terminal.draw(|frame| draw(frame, &mut app, &labels, &filtered_entries))?;
 
-        if !event::poll(std::time::Duration::from_secs(1))? {
+        let remaining = tick.saturating_sub(last_tick.elapsed());
+        if !event::poll(remaining)? {
+            last_tick = std::time::Instant::now();
             continue;
         }
 
