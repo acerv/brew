@@ -50,9 +50,18 @@ pub fn draw(
 
     // ── content + status bar ──
     if app.active == 0 {
-        let seen = app.seen_paths.clone();
-        draw_list(frame, app, labels, mailbox_entries, chunks[1], &seen);
-        let entries = &mailbox_entries[app.selected_mailbox];
+        let sel = app.selected_mailbox;
+        draw_list(
+            frame,
+            sel,
+            &mut app.mailbox_list_state,
+            &mut app.thread_list_states[sel],
+            labels,
+            mailbox_entries,
+            chunks[1],
+            &app.seen_paths,
+        );
+        let entries = &mailbox_entries[sel];
         let selected = app.selected_thread().map(|i| i + 1).unwrap_or(0);
         let status = Paragraph::new(format!(
             " {}/{} — j/k move  J/K mailbox  Enter open  r reply  R reply-empty  t thanks  h/l tabs  q quit",
@@ -74,7 +83,9 @@ pub fn draw(
 
 fn draw_list(
     frame: &mut ratatui::Frame,
-    app: &mut App,
+    selected_mailbox: usize,
+    mailbox_list_state: &mut ratatui::widgets::ListState,
+    thread_list_state: &mut ratatui::widgets::ListState,
     labels: &[&str],
     mailbox_entries: &[Vec<Entry>],
     area: ratatui::layout::Rect,
@@ -122,10 +133,10 @@ fn draw_list(
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("> ");
-    frame.render_stateful_widget(mb_list, panes[0], &mut app.mailbox_list_state);
+    frame.render_stateful_widget(mb_list, panes[0], mailbox_list_state);
 
     // ── right: thread list for the selected mailbox ──
-    let entries = &mailbox_entries[app.selected_mailbox];
+    let entries = &mailbox_entries[selected_mailbox];
     let items: Vec<ListItem> = entries
         .iter()
         .map(|e| {
@@ -167,11 +178,7 @@ fn draw_list(
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("> ");
-    frame.render_stateful_widget(
-        thread_list,
-        panes[1],
-        &mut app.thread_list_states[app.selected_mailbox],
-    );
+    frame.render_stateful_widget(thread_list, panes[1], thread_list_state);
 }
 
 fn draw_email(frame: &mut ratatui::Frame, tab: &mut EmailTab, area: ratatui::layout::Rect) {
