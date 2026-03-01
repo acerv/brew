@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@suse.com>
 use super::app::{App, Entry};
 use super::tab::EmailTab;
-use super::utils::format_timestamp;
 use crate::core::read::is_unread;
 use ratatui::{
     layout::{Constraint, Direction, Layout},
@@ -140,7 +139,7 @@ fn draw_list(
     let items: Vec<ListItem> = entries
         .iter()
         .map(|e| {
-            let date = format_timestamp(e.thread.data.timestamp);
+            let date = e.thread.data.date.clone();
             let indent = if e.depth == 0 {
                 String::new()
             } else {

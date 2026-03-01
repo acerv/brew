@@ -6,7 +6,6 @@ use ratatui::text::Line;
 use std::path::{Path, PathBuf};
 
 use super::highlight::highlight_body;
-use super::utils::format_timestamp;
 
 /// Format an address list (From / To / Cc) into a single comma-separated string.
 /// Returns `"—"` when the header is absent.
@@ -38,7 +37,7 @@ impl EmailTab {
         let to = format_addr_list(msg.to());
         let cc = format_addr_list(msg.cc());
 
-        let date = format_timestamp(meta.timestamp);
+        let date = meta.date.clone();
 
         let body = msg
             .body_text(0)

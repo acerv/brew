@@ -8,6 +8,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::rc::Rc;
+use time::OffsetDateTime;
+use time::macros::format_description;
 
 /// Only the header fields required for threading and display, plus the path to
 /// the on-disk file so that the full message can be loaded on demand in O(1).
@@ -18,6 +20,9 @@ pub struct EmailMeta {
     /// Unix timestamp (seconds since epoch) from the `Date:` header.
     /// `None` when the header is absent or unparseable.
     pub timestamp: Option<i64>,
+    /// Pre-formatted date string ("YYYY-MM-DD HH:MM"), computed once at parse
+    /// time so that the render loop can use it without any allocation.
+    pub date: String,
     /// Absolute path to the Maildir file that contains this message.
     /// Passed to `MailCache::load_mail` to retrieve the full email in O(1).
     pub path: PathBuf,
@@ -127,10 +132,12 @@ impl MailCache {
                 None => continue,
             };
 
+            let timestamp = parsed.date().map(|d| d.to_timestamp());
             let meta = EmailMeta {
                 message_id: id.clone(),
                 subject: parsed.subject().unwrap_or_default().to_string(),
-                timestamp: parsed.date().map(|d| d.to_timestamp()),
+                date: format_date(timestamp),
+                timestamp,
                 path: content.path().to_path_buf(),
             };
 
@@ -215,10 +222,12 @@ impl MailCache {
             return;
         }
 
+        let timestamp = parsed.date().map(|d| d.to_timestamp());
         let meta = EmailMeta {
             message_id: id.clone(),
             subject: parsed.subject().unwrap_or_default().to_string(),
-            timestamp: parsed.date().map(|d| d.to_timestamp()),
+            date: format_date(timestamp),
+            timestamp,
             path: path.to_path_buf(),
         };
         let thread = Rc::new(EmailThread::new(meta));
@@ -248,6 +257,19 @@ impl MailCache {
     /// with the given `Message-ID`, or `None`.
     fn find_by_id(&self, id: &str) -> Option<Rc<EmailThread>> {
         find_thread_by_id(&self.threads, id)
+    }
+}
+
+// ── helpers ──────────────────────────────────────────────────────────────────
+
+/// Format a Unix timestamp into a fixed-width "YYYY-MM-DD HH:MM " string.
+/// Returns a dash padded to the same width when the timestamp is absent.
+fn format_date(ts: Option<i64>) -> String {
+    const DATE_WIDTH: usize = 17; // "YYYY-MM-DD HH:MM" + 1 space
+    let fmt = format_description!("[year]-[month]-[day] [hour]:[minute]");
+    match ts.and_then(|t| OffsetDateTime::from_unix_timestamp(t).ok()) {
+        Some(dt) => format!("{:<DATE_WIDTH$}", dt.format(fmt).unwrap_or_default()),
+        None => format!("{:<DATE_WIDTH$}", "—"),
     }
 }
 
