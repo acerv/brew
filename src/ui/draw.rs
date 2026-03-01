@@ -95,7 +95,7 @@ fn draw_list(
     seen_paths: &HashMap<String, PathBuf>,
     unread_only: bool,
 ) {
-    let left_w = (labels.iter().map(|l| l.len()).max().unwrap_or(8) + 10).clamp(16, 40) as u16;
+    let left_w = (labels.iter().map(|l| l.len()).max().unwrap_or(8) + 18).clamp(16, 40) as u16;
     let panes = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(left_w), Constraint::Min(0)])
