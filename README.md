@@ -1,94 +1,84 @@
-# Caching mechanism
+# brew
 
-## mbox tree
+A terminal email client for Maildir folders, written in Rust.
 
-- mbox name
-- list of emails
+## Features
 
-## Email
+- Threaded email list with tree indentation
+- Diff/patch syntax highlighting in email bodies
+- Reply-all and blank-reply composition in `$VISUAL`/`$EDITOR`
+- Pre-written "thanks" replies
+- Read/unread tracking via Maildir filename flags (no external state file)
+- Filesystem watcher — thread list refreshes automatically on new mail
+- Multiple mailboxes, switchable from the list view
+- SMTP sending via STARTTLS (Gmail App Passwords supported)
 
-- id
-- reply_to
-- date
-- subect
-- cc
-- to
-- body
-- ordered Email list
+## Configuration
 
-## First opening
+Create `~/.config/brew/config.toml`:
 
-At the very beginning there's no cache, so we need to go through all the emails
-and to build a dependency tree which can be easily fetched at the next start
-without the need of reading all emails at once.
+```toml
+[smtp]
+host     = "smtp.gmail.com"
+port     = 587
+username = "you@example.com"
+password = "app-password"
 
-This requires a certain amount of operations:
+[[mailbox]]
+label = "INBOX"
+path  = "/home/you/Mail/INBOX/"
 
-- looping inside mbox and find email with ID
-- open email file and extract all the information
-
-We need to speedup the process by saving all information we already need at the
-beginning. These might be:
-
-- id
-- reply_to
-- date
-- subject
-- cc
-- to
-- read (flat telling if email has been read already)
-- body size
-
-The email's `body` would be removed from this equation, since it increases cache
-size, slowing down deserialization process. `body` can be loaded at runtime.
-
-## Caching algorithm
-
-Email files might be read in a random order, so we can't really create a table
-of replies for each email in `O(n)`, where `n` is the number of emails, unless
-we reserve a slot for each parent we didn't reach yet.
-
-For instance, let's suppose that we would like to obtain the following tree:
-
-```text
-A -- B -- C
- `-- D -- E -- F
-           `-- G
+[[mailbox]]
+label = "Work"
+path  = "/home/you/Mail/Work/"
 ```
 
-Unfortunately, we might receive `E` before `A` and `D`, so it becomes hard to
-guess where we can find the parents:
+Optional files (plain text, loaded from `~/.config/brew/`):
 
-```text
-? -- B -- C
- `-- ? -- E -- F
-           `-- G
-```
+| File        | Purpose                                  |
+| ----------- | ---------------------------------------- |
+| `signature` | Appended to every reply draft            |
+| `thanks`    | Body pre-filled for `t` (thanks) replies |
 
-By using a Hash we can store parents IDs we are searching for and the list of
-children which are searching for it. We will probably need a new hash also to
-store the list of emails we already seen. In this way, every search operation
-will cost `O(1)`.
+## Key bindings
 
-- `Hs` associates `reply_to` IDs to a list of emails which are searching for it
-- `Hm` associates `id` to its message
+### List view
 
-We can define a parent as an email with empty `reply_to`, hence:
+| Key                   | Action                  |
+| --------------------- | ----------------------- |
+| `j` / `k`             | Move down / up          |
+| `g` / `G`             | Top / bottom            |
+| `PageDown` / `Ctrl+D` | Skip 15 down            |
+| `PageUp` / `Ctrl+U`   | Skip 15 up              |
+| `J` / `K`             | Next / previous mailbox |
+| `Enter`               | Open email              |
+| `r`                   | Reply-all (quoted)      |
+| `R`                   | Reply-all (blank)       |
+| `t`                   | Send thanks reply       |
+| `D`                   | Delete email            |
+| `h` / `l`             | Switch tab left / right |
+| `q` / `Esc`           | Quit                    |
 
-- `Lp` is the list of parents
+### Email view
 
-The insertion algorithm will look like this:
+| Key                   | Action                     |
+| --------------------- | -------------------------- |
+| `j` / `k`             | Scroll down / up one line  |
+| `PageDown` / `Ctrl+D` | Scroll 15 lines down       |
+| `PageUp` / `Ctrl+U`   | Scroll 15 lines up         |
+| `g` / `G`             | Top / bottom of body       |
+| `J` / `K`             | Next / previous thread     |
+| `r`                   | Reply-all (quoted)         |
+| `R`                   | Reply-all (blank)          |
+| `t`                   | Send thanks reply          |
+| `D`                   | Close tab and delete email |
+| `h` / `l`             | Switch tab left / right    |
+| `Esc`                 | Back to list               |
+| `q`                   | Close tab                  |
 
-1. we read a new message `Mi`
-2. we extract `reply_to` and if
-   - it's empty, we add it to `Lp`
-   - it's non empty
-     - we extract `Hm[reply_to]`
-       - if it's empty, we add it to `Hs[reply_to]`
-       - if it's not empty, we add `Mi` to `Hm[reply_to]` children
-3. we extract `id` from `Mi` and if `Hs[id]`
-   - is not empty, we set `Hs[id]` as children of `Mi`
-   - is empty, we don't do anything
-4. we add `Mi` to `Hm[id]`
+### Global
 
-This has to be repeated for all the messages we read.
+| Key      | Action              |
+| -------- | ------------------- |
+| `Ctrl+N` | Next tab (circular) |
+| `Ctrl+P` | Prev tab (circular) |
