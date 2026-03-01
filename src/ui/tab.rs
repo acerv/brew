@@ -1,4 +1,4 @@
-use crate::cache::{EmailMeta, MailCache};
+use crate::core::cache::{EmailMeta, MailCache};
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 

@@ -1,4 +1,4 @@
-use crate::config::Smtp;
+use crate::core::config::Smtp;
 use anyhow::Result;
 use crossterm::{
     event::{self, Event, KeyCode},

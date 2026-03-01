@@ -1,12 +1,10 @@
-mod cache;
-mod config;
-mod read;
+mod core;
 mod ui;
 
-use config::Config;
+use core::config::Config;
 
 fn main() -> anyhow::Result<()> {
     let cfg = Config::load()?;
-    let mailbox_cfgs: Vec<&config::Mailbox> = cfg.mailboxes.iter().collect();
+    let mailbox_cfgs: Vec<&core::config::Mailbox> = cfg.mailboxes.iter().collect();
     ui::run(&mailbox_cfgs, &cfg.smtp)
 }

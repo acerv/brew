@@ -1,7 +1,7 @@
-use crate::cache::EmailThread;
-use crate::cache::MailCache;
-use crate::config::{Mailbox, Smtp, load_signature, load_thanks};
-use crate::read::mark_seen;
+use crate::core::cache::EmailThread;
+use crate::core::cache::MailCache;
+use crate::core::config::{Mailbox, Smtp, load_signature, load_thanks};
+use crate::core::read::mark_seen;
 use anyhow::Result;
 use crossterm::{
     event::{self, Event, KeyCode, KeyModifiers},

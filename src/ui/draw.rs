@@ -1,7 +1,7 @@
 use super::app::{App, Entry};
 use super::tab::EmailTab;
 use super::utils::format_timestamp;
-use crate::read::is_unread;
+use crate::core::read::is_unread;
 use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
