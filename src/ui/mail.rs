@@ -20,26 +20,6 @@ use std::process::Command;
 
 use super::tab::EmailTab;
 
-// ── address helpers ───────────────────────────────────────────────────────────
-
-fn bare_address(s: &str) -> &str {
-    if let Some(start) = s.find('<')
-        && let Some(end) = s[start..].find('>')
-    {
-        return s[start + 1..start + end].trim();
-    }
-    s.trim()
-}
-
-/// Split a comma-separated address list (as produced by `format_addr_list`)
-/// into individual bare `user@host` addresses, excluding `self_addr`.
-fn split_addresses(list: &str, self_addr: &str) -> Vec<String> {
-    list.split(',')
-        .map(|s| bare_address(s.trim()).to_string())
-        .filter(|a| !a.is_empty() && !a.eq_ignore_ascii_case(self_addr))
-        .collect()
-}
-
 // ── reply ─────────────────────────────────────────────────────────────────────
 
 /// Build a reply draft, open vim, ask for confirmation, then send via SMTP.
@@ -403,3 +383,24 @@ fn confirm_send(
 pub fn delete_mail(path: &std::path::Path) {
     let _ = std::fs::remove_file(path);
 }
+
+// ── address helpers ───────────────────────────────────────────────────────────
+
+fn bare_address(s: &str) -> &str {
+    if let Some(start) = s.find('<')
+        && let Some(end) = s[start..].find('>')
+    {
+        return s[start + 1..start + end].trim();
+    }
+    s.trim()
+}
+
+/// Split a comma-separated address list (as produced by `format_addr_list`)
+/// into individual bare `user@host` addresses, excluding `self_addr`.
+fn split_addresses(list: &str, self_addr: &str) -> Vec<String> {
+    list.split(',')
+        .map(|s| bare_address(s.trim()).to_string())
+        .filter(|a| !a.is_empty() && !a.eq_ignore_ascii_case(self_addr))
+        .collect()
+}
+
