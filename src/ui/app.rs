@@ -318,30 +318,37 @@ fn run_loop(
     // `filtered_entries` is the view actually shown and navigated.
     // It equals `mailbox_entries` when unread_only[i] is false, and is
     // filtered to unread emails only when true.
-    let apply_filter = |entries: &[Vec<Entry>], app: &App, seen: &HashMap<String, PathBuf>| -> Vec<Vec<Entry>> {
-        entries
-            .iter()
-            .enumerate()
-            .map(|(i, v)| {
-                if app.unread_only[i] {
-                    v.iter()
-                        .filter(|e| {
-                            let eff = seen
-                                .get(&e.thread.data.message_id)
-                                .map(|p| p.as_path())
-                                .unwrap_or(&e.thread.data.path);
-                            is_unread(eff)
-                        })
-                        .map(|e| Entry { depth: e.depth, thread: e.thread.clone() })
-                        .collect()
-                } else {
-                    v.iter()
-                        .map(|e| Entry { depth: e.depth, thread: e.thread.clone() })
-                        .collect()
-                }
-            })
-            .collect()
-    };
+    let apply_filter =
+        |entries: &[Vec<Entry>], app: &App, seen: &HashMap<String, PathBuf>| -> Vec<Vec<Entry>> {
+            entries
+                .iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    if app.unread_only[i] {
+                        v.iter()
+                            .filter(|e| {
+                                let eff = seen
+                                    .get(&e.thread.data.message_id)
+                                    .map(|p| p.as_path())
+                                    .unwrap_or(&e.thread.data.path);
+                                is_unread(eff)
+                            })
+                            .map(|e| Entry {
+                                depth: e.depth,
+                                thread: e.thread.clone(),
+                            })
+                            .collect()
+                    } else {
+                        v.iter()
+                            .map(|e| Entry {
+                                depth: e.depth,
+                                thread: e.thread.clone(),
+                            })
+                            .collect()
+                    }
+                })
+                .collect()
+        };
 
     let mut filtered_entries = apply_filter(&mailbox_entries, &app, &app.seen_paths.clone());
 
@@ -411,18 +418,25 @@ fn run_loop(
                     mailbox_entries[i]
                         .iter()
                         .filter(|e| {
-                            let eff = app.seen_paths
+                            let eff = app
+                                .seen_paths
                                 .get(&e.thread.data.message_id)
                                 .map(|p| p.as_path())
                                 .unwrap_or(&e.thread.data.path);
                             is_unread(eff)
                         })
-                        .map(|e| Entry { depth: e.depth, thread: e.thread.clone() })
+                        .map(|e| Entry {
+                            depth: e.depth,
+                            thread: e.thread.clone(),
+                        })
                         .collect()
                 } else {
                     mailbox_entries[i]
                         .iter()
-                        .map(|e| Entry { depth: e.depth, thread: e.thread.clone() })
+                        .map(|e| Entry {
+                            depth: e.depth,
+                            thread: e.thread.clone(),
+                        })
                         .collect()
                 };
                 // Clamp selection if the visible list shrank.
@@ -518,13 +532,17 @@ fn run_loop(
                         filtered_entries[mb] = mailbox_entries[mb]
                             .iter()
                             .filter(|e| {
-                                let eff = app.seen_paths
+                                let eff = app
+                                    .seen_paths
                                     .get(&e.thread.data.message_id)
                                     .map(|p| p.as_path())
                                     .unwrap_or(&e.thread.data.path);
                                 is_unread(eff)
                             })
-                            .map(|e| Entry { depth: e.depth, thread: e.thread.clone() })
+                            .map(|e| Entry {
+                                depth: e.depth,
+                                thread: e.thread.clone(),
+                            })
                             .collect();
                         // Reset selection to the first entry.
                         let len = filtered_entries[mb].len();
@@ -535,7 +553,10 @@ fn run_loop(
                         app.unread_only[mb] = false;
                         filtered_entries[mb] = mailbox_entries[mb]
                             .iter()
-                            .map(|e| Entry { depth: e.depth, thread: e.thread.clone() })
+                            .map(|e| Entry {
+                                depth: e.depth,
+                                thread: e.thread.clone(),
+                            })
                             .collect();
                         // Reset selection to the first entry.
                         let len = filtered_entries[mb].len();
@@ -612,9 +633,6 @@ fn run_loop(
                     KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         let tab = &mut app.emails[ei];
                         tab.scroll = tab.scroll.saturating_add(15).min(tab.scroll_max);
-                    }
-                    KeyCode::Home => {
-                        app.emails[ei].scroll = 0;
                     }
                     _ => {}
                 }

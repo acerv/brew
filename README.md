@@ -69,7 +69,7 @@ Optional files (plain text, loaded from `~/.config/brew/`):
 | `j` / `k`             | Scroll down / up one line  |
 | `PageDown` / `Ctrl+D` | Scroll 15 lines down       |
 | `PageUp` / `Ctrl+U`   | Scroll 15 lines up         |
-| `g` / `Home`          | Top of body                |
+| `g`                   | Top of body                |
 | `G`                   | Bottom of body             |
 | `J` / `K`             | Next / previous thread     |
 | `r`                   | Reply-all (quoted)         |
