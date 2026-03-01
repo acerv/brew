@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@suse.com>
 use super::app::{App, Entry};
 use super::tab::EmailTab;
+use crate::core::date::humanize_date;
 use crate::core::read::is_unread;
 use ratatui::{
     layout::{Constraint, Direction, Layout},
@@ -206,7 +207,10 @@ fn draw_list(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, state: Lis
                 Span::styled(indent, Style::default().fg(Color::DarkGray)),
                 Span::styled(subject_padded, text_style),
                 Span::raw(" "),
-                Span::styled(e.thread.data.date.clone(), Style::default().fg(Color::Cyan)),
+                Span::styled(
+                    humanize_date(e.thread.data.timestamp),
+                    Style::default().fg(Color::Cyan),
+                ),
             ]))
         })
         .collect();
