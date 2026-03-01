@@ -83,4 +83,3 @@ fn format_addr_list(list: Option<&mail_parser::Address>) -> String {
     })
     .unwrap_or_else(|| "—".to_string())
 }
-

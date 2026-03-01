@@ -36,8 +36,10 @@ pub fn reply(
     terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>,
 ) -> Result<()> {
     let self_addr = smtp.username.as_str();
-    let sender = bare_address(&tab.from).to_string();
-    let mut to_addrs: Vec<String> = vec![sender];
+    let mut to_addrs: Vec<String> = bare_address(&tab.from)
+        .map(str::to_string)
+        .into_iter()
+        .collect();
     for a in split_addresses(&tab.to, self_addr) {
         if !to_addrs.iter().any(|x| x.eq_ignore_ascii_case(&a)) {
             to_addrs.push(a);
@@ -135,8 +137,10 @@ pub fn thanks_reply(
     terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>,
 ) -> Result<()> {
     let self_addr = smtp.username.as_str();
-    let sender = bare_address(&tab.from).to_string();
-    let mut to_addrs: Vec<String> = vec![sender];
+    let mut to_addrs: Vec<String> = bare_address(&tab.from)
+        .map(str::to_string)
+        .into_iter()
+        .collect();
     for a in split_addresses(&tab.to, self_addr) {
         if !to_addrs.iter().any(|x| x.eq_ignore_ascii_case(&a)) {
             to_addrs.push(a);
@@ -386,21 +390,23 @@ pub fn delete_mail(path: &std::path::Path) {
 
 // ── address helpers ───────────────────────────────────────────────────────────
 
-fn bare_address(s: &str) -> &str {
-    if let Some(start) = s.find('<')
+fn bare_address(s: &str) -> Option<&str> {
+    let addr = if let Some(start) = s.find('<')
         && let Some(end) = s[start..].find('>')
     {
-        return s[start + 1..start + end].trim();
-    }
-    s.trim()
+        s[start + 1..start + end].trim()
+    } else {
+        s.trim()
+    };
+    if addr.contains('@') { Some(addr) } else { None }
 }
 
 /// Split a comma-separated address list (as produced by `format_addr_list`)
 /// into individual bare `user@host` addresses, excluding `self_addr`.
 fn split_addresses(list: &str, self_addr: &str) -> Vec<String> {
     list.split(',')
-        .map(|s| bare_address(s.trim()).to_string())
-        .filter(|a| !a.is_empty() && !a.eq_ignore_ascii_case(self_addr))
+        .filter_map(|s| bare_address(s.trim()))
+        .map(str::to_string)
+        .filter(|a| !a.eq_ignore_ascii_case(self_addr))
         .collect()
 }
-

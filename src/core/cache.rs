@@ -204,7 +204,6 @@ fn sort_threads(threads: &mut [Rc<EmailThread>]) {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
