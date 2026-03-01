@@ -165,11 +165,18 @@ fn draw_list(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, state: Lis
     frame.render_stateful_widget(mb_list, panes[0], mailbox_list_state);
 
     // ── right: thread list for the selected mailbox ──
+    // Layout per row: [from: FROM_W] [indent+subject: subject_w] [date: DATE_W]
+    // The three columns plus two single-space separators fill the usable width.
+    const FROM_W: usize = 27;
+    const DATE_W: usize = 16; // "YYYY-MM-DD HH:MM"
+    let usable = panes[1].width.saturating_sub(2) as usize; // subtract borders
+    let subject_w = usable.saturating_sub(FROM_W + DATE_W + 2);
+
     let entries = &mailbox_entries[selected_mailbox];
     let items: Vec<ListItem> = entries
         .iter()
         .map(|e| {
-            let date = e.thread.data.date.clone();
+            let from = fit(&e.thread.data.from, FROM_W);
             let indent = if e.depth == 0 {
                 String::new()
             } else {
@@ -180,11 +187,13 @@ fn draw_list(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, state: Lis
             } else {
                 e.thread.data.subject.clone()
             };
+            let subject_avail = subject_w.saturating_sub(indent.len());
+            let subject_padded = fit(&subject, subject_avail);
             let eff_path = seen_paths
                 .get(&e.thread.data.message_id)
                 .map(|p| p.as_path())
                 .unwrap_or(&e.thread.data.path);
-            let subject_style = if is_unread(eff_path) {
+            let text_style = if is_unread(eff_path) {
                 Style::default()
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD)
@@ -192,9 +201,12 @@ fn draw_list(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, state: Lis
                 Style::default()
             };
             ListItem::new(Line::from(vec![
-                Span::styled(date, Style::default().fg(Color::Cyan)),
+                Span::styled(from, text_style),
+                Span::raw(" "),
                 Span::styled(indent, Style::default().fg(Color::DarkGray)),
-                Span::styled(subject, subject_style),
+                Span::styled(subject_padded, text_style),
+                Span::raw(" "),
+                Span::styled(e.thread.data.date.clone(), Style::default().fg(Color::Cyan)),
             ]))
         })
         .collect();
@@ -302,6 +314,24 @@ fn wrap_header_field<'a>(label: &'a str, value: &'a str, value_width: usize) -> 
     }
 
     lines
+}
+
+/// Fit `s` into exactly `width` terminal columns: truncate (with `…`) if too
+/// long, right-pad with spaces if too short.
+fn fit(s: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let char_count = s.chars().count();
+    if char_count <= width {
+        let mut out = s.to_string();
+        out.extend(std::iter::repeat_n(' ', width - char_count));
+        out
+    } else {
+        let mut out: String = s.chars().take(width - 1).collect();
+        out.push('…');
+        out
+    }
 }
 
 fn truncate(s: &str, max: usize) -> String {

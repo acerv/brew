@@ -16,6 +16,9 @@ use time::macros::format_description;
 #[derive(Debug, PartialEq)]
 pub struct EmailMeta {
     pub message_id: String,
+    /// Display name from the `From:` header, falling back to the raw address.
+    /// Empty string when the header is absent.
+    pub from: String,
     pub subject: String,
     /// Unix timestamp (seconds since epoch) from the `Date:` header.
     /// `None` when the header is absent or unparseable.
@@ -133,8 +136,10 @@ impl MailCache {
             };
 
             let timestamp = parsed.date().map(|d| d.to_timestamp());
+            let from = extract_from(&parsed);
             let meta = EmailMeta {
                 message_id: id.clone(),
+                from,
                 subject: parsed.subject().unwrap_or_default().to_string(),
                 date: format_date(timestamp),
                 timestamp,
@@ -223,8 +228,10 @@ impl MailCache {
         }
 
         let timestamp = parsed.date().map(|d| d.to_timestamp());
+        let from = extract_from(&parsed);
         let meta = EmailMeta {
             message_id: id.clone(),
+            from,
             subject: parsed.subject().unwrap_or_default().to_string(),
             date: format_date(timestamp),
             timestamp,
@@ -262,14 +269,28 @@ impl MailCache {
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-/// Format a Unix timestamp into a fixed-width "YYYY-MM-DD HH:MM " string.
-/// Returns a dash padded to the same width when the timestamp is absent.
+/// Extract the display name (or bare address) of the first `From:` sender.
+fn extract_from(msg: &mail_parser::Message) -> String {
+    msg.from()
+        .and_then(|a| a.iter().next())
+        .map(|a| {
+            let name = a.name().unwrap_or_default();
+            if !name.is_empty() {
+                name.to_string()
+            } else {
+                a.address().unwrap_or_default().to_string()
+            }
+        })
+        .unwrap_or_default()
+}
+
+/// Format a Unix timestamp into a fixed-width "YYYY-MM-DD HH:MM" string (16 chars).
+/// Returns a dash when the timestamp is absent.
 fn format_date(ts: Option<i64>) -> String {
-    const DATE_WIDTH: usize = 17; // "YYYY-MM-DD HH:MM" + 1 space
     let fmt = format_description!("[year]-[month]-[day] [hour]:[minute]");
     match ts.and_then(|t| OffsetDateTime::from_unix_timestamp(t).ok()) {
-        Some(dt) => format!("{:<DATE_WIDTH$}", dt.format(fmt).unwrap_or_default()),
-        None => format!("{:<DATE_WIDTH$}", "—"),
+        Some(dt) => dt.format(fmt).unwrap_or_else(|_| "—".to_string()),
+        None => "—".to_string(),
     }
 }
 
