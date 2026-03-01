@@ -47,7 +47,8 @@ Optional files (plain text, loaded from `~/.config/brew/`):
 | Key                   | Action                  |
 | --------------------- | ----------------------- |
 | `j` / `k`             | Move down / up          |
-| `g` / `G`             | Top / bottom            |
+| `Home`                | Jump to top             |
+| `End`                 | Jump to bottom          |
 | `PageDown` / `Ctrl+D` | Skip 15 down            |
 | `PageUp` / `Ctrl+U`   | Skip 15 up              |
 | `J` / `K`             | Next / previous mailbox |
@@ -55,6 +56,8 @@ Optional files (plain text, loaded from `~/.config/brew/`):
 | `r`                   | Reply-all (quoted)      |
 | `R`                   | Reply-all (blank)       |
 | `t`                   | Send thanks reply       |
+| `N`                   | Show unread only        |
+| `n`                   | Show all emails         |
 | `D`                   | Delete email            |
 | `h` / `l`             | Switch tab left / right |
 | `q` / `Esc`           | Quit                    |
@@ -66,7 +69,8 @@ Optional files (plain text, loaded from `~/.config/brew/`):
 | `j` / `k`             | Scroll down / up one line  |
 | `PageDown` / `Ctrl+D` | Scroll 15 lines down       |
 | `PageUp` / `Ctrl+U`   | Scroll 15 lines up         |
-| `g` / `G`             | Top / bottom of body       |
+| `g` / `Home`          | Top of body                |
+| `G`                   | Bottom of body             |
 | `J` / `K`             | Next / previous thread     |
 | `r`                   | Reply-all (quoted)         |
 | `R`                   | Reply-all (blank)          |
