@@ -78,21 +78,29 @@ pub fn draw(
         let entries = &mailbox_entries[sel];
         let selected = app.selected_thread().map(|i| i + 1).unwrap_or(0);
         let filter_hint = if unread_only { "  [unread]" } else { "" };
-        let status = Paragraph::new(format!(
-            " {}/{}{} — j/k move  J/K mailbox  Enter open  r reply  R reply-empty  t thanks  N unread-only  n all  h/l tabs  q quit",
-            selected,
-            entries.len(),
-            filter_hint,
-        ))
-        .style(Style::default().fg(Color::DarkGray));
+        let status = if let Some(err) = &app.sync_error {
+            Paragraph::new(format!(" sync error: {}", err)).style(Style::default().fg(Color::Red))
+        } else {
+            Paragraph::new(format!(
+                " {}/{}{} — j/k move  J/K mailbox  Enter open  r reply  R reply-empty  t thanks  N unread-only  n all  h/l tabs  q quit",
+                selected,
+                entries.len(),
+                filter_hint,
+            ))
+            .style(Style::default().fg(Color::DarkGray))
+        };
         frame.render_widget(status, chunks[2]);
     } else {
         let ei = app.active - 1;
         draw_email(frame, &mut app.emails[ei], chunks[1]);
-        let status = Paragraph::new(
-            " j/k scroll  J/K thread  h/l tabs  r reply  R reply-empty  t thanks  Esc back  q close",
-        )
-        .style(Style::default().fg(Color::DarkGray));
+        let status = if let Some(err) = &app.sync_error {
+            Paragraph::new(format!(" sync error: {}", err)).style(Style::default().fg(Color::Red))
+        } else {
+            Paragraph::new(
+                " j/k scroll  J/K thread  h/l tabs  r reply  R reply-empty  t thanks  Esc back  q close",
+            )
+            .style(Style::default().fg(Color::DarkGray))
+        };
         frame.render_widget(status, chunks[2]);
     }
 }

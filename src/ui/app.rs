@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@suse.com>
 use crate::core::cache::EmailThread;
 use crate::core::cache::MailCache;
-use crate::core::config::{Mailbox, Smtp, load_signature, load_thanks};
+use crate::core::config::{Mailbox, Smtp, Sync, load_signature, load_thanks};
 use crate::core::read::{is_unread, mark_seen};
 use anyhow::Result;
 use crossterm::{
@@ -60,6 +60,9 @@ pub struct App {
     /// Per-mailbox filter flag: when `true` the thread list shows only unread
     /// emails. Toggled with `N` (enable) and `n` (disable).
     pub unread_only: Vec<bool>,
+    /// The last sync error message, if any. `None` when the last sync
+    /// succeeded or no sync has run yet.
+    pub sync_error: Option<String>,
 }
 
 impl App {
@@ -83,6 +86,7 @@ impl App {
             thread_list_states,
             seen_paths: HashMap::new(),
             unread_only: vec![false; mailbox_count],
+            sync_error: None,
         }
     }
 
@@ -223,7 +227,7 @@ impl App {
 
 // ── event loop ────────────────────────────────────────────────────────────────
 
-pub fn run(mailbox_cfgs: &[&Mailbox], smtp: &Smtp) -> Result<()> {
+pub fn run(mailbox_cfgs: &[&Mailbox], smtp: &Smtp, sync_cfg: Option<&Sync>) -> Result<()> {
     let signature = load_signature();
     let thanks = load_thanks();
 
@@ -254,6 +258,16 @@ pub fn run(mailbox_cfgs: &[&Mailbox], smtp: &Smtp) -> Result<()> {
         }
     }
 
+    // Spawn the background sync thread when a [sync] section is configured.
+    // Dropping `shutdown_tx` (at the end of this function) signals the thread
+    // to stop after its current sleep interval.
+    let (sync_tx, sync_rx) = mpsc::channel::<Option<String>>();
+    let _shutdown_tx = sync_cfg.map(|s| {
+        let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
+        crate::core::sync::spawn(s.command.clone(), s.interval, sync_tx, shutdown_rx);
+        shutdown_tx
+    });
+
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -268,6 +282,7 @@ pub fn run(mailbox_cfgs: &[&Mailbox], smtp: &Smtp) -> Result<()> {
         thanks.as_deref(),
         smtp,
         rx,
+        sync_rx,
     );
 
     drop(watcher);
@@ -287,6 +302,7 @@ fn run_loop(
     thanks: Option<&str>,
     smtp: &Smtp,
     fs_events: mpsc::Receiver<notify::Event>,
+    sync_rx: mpsc::Receiver<Option<String>>,
 ) -> Result<()> {
     let labels: Vec<&str> = mailbox_cfgs.iter().map(|mb| mb.label.as_str()).collect();
 
@@ -353,6 +369,11 @@ fn run_loop(
     let mut filtered_entries = apply_filter(&mailbox_entries, &app, &app.seen_paths.clone());
 
     loop {
+        // Drain sync results: None = success (clear error), Some(msg) = failure.
+        for msg in sync_rx.try_iter() {
+            app.sync_error = msg;
+        }
+
         // Drain all pending filesystem events and apply them incrementally.
         let mut changed: Vec<bool> = vec![false; mailbox_cfgs.len()];
         for ev in fs_events.try_iter() {

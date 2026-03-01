@@ -20,10 +20,17 @@ pub struct Smtp {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct Sync {
+    pub command: String,
+    pub interval: u64,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct Config {
     #[serde(rename = "mailbox")]
     pub mailboxes: Vec<Mailbox>,
     pub smtp: Smtp,
+    pub sync: Option<Sync>,
 }
 
 impl Config {

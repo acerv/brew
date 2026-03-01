@@ -3,3 +3,4 @@
 pub mod cache;
 pub mod config;
 pub mod read;
+pub mod sync;

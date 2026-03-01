@@ -12,6 +12,7 @@ A terminal email client for Maildir folders, written in Rust.
 - Filesystem watcher — thread list refreshes automatically on new mail
 - Multiple mailboxes, switchable from the list view
 - SMTP sending via STARTTLS (Gmail App Passwords supported)
+- Periodic background sync via a configurable shell command (e.g. `mbsync`)
 
 ## Configuration
 
@@ -32,6 +33,12 @@ path  = "/home/you/Mail/INBOX/"
 [[mailbox]]
 label = "Work"
 path  = "/home/you/Mail/Work/"
+
+# Optional: run a shell command every N seconds to sync mail.
+# Errors are shown in the status bar; the UI is never blocked.
+[sync]
+command  = "mbsync -a"
+interval = 60
 ```
 
 Optional files (plain text, loaded from `~/.config/brew/`):
