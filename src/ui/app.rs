@@ -10,6 +10,7 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
+use notify::event::ModifyKind;
 use notify::{EventKind, RecursiveMode, Watcher, recommended_watcher};
 use ratatui::widgets::ListState;
 use ratatui::{Terminal, backend::CrosstermBackend};
@@ -17,10 +18,7 @@ use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::mpsc;
 
 use super::draw::draw;
 use super::mail::{delete_mail, reply, thanks_reply};
@@ -225,17 +223,28 @@ pub fn run(mailbox_cfgs: &[&Mailbox], smtp: &Smtp) -> Result<()> {
     let signature = load_signature();
     let thanks = load_thanks();
 
-    let new_mail = Arc::new(AtomicBool::new(false));
-    let flag = Arc::clone(&new_mail);
+    // Canonicalize every mailbox path once so that prefix-matching against the
+    // absolute paths that `notify` reports in events is always correct,
+    // regardless of whether config uses `~`, relative paths, or symlinks.
+    let canonical_paths: Vec<PathBuf> = mailbox_cfgs
+        .iter()
+        .map(|mb| std::fs::canonicalize(&mb.path).unwrap_or_else(|_| PathBuf::from(&mb.path)))
+        .collect();
+
+    let (tx, rx) = mpsc::channel::<notify::Event>();
     let mut watcher = recommended_watcher(move |res: notify::Result<notify::Event>| {
         if let Ok(ev) = res
-            && matches!(ev.kind, EventKind::Create(_) | EventKind::Remove(_))
+            && matches!(
+                ev.kind,
+                EventKind::Create(_)
+                    | EventKind::Remove(_)
+                    | EventKind::Modify(ModifyKind::Name(_))
+            )
         {
-            flag.store(true, Ordering::Relaxed);
+            let _ = tx.send(ev);
         }
     })?;
-    for mb in mailbox_cfgs {
-        let path = std::path::Path::new(&mb.path);
+    for path in &canonical_paths {
         if path.exists() {
             let _ = watcher.watch(path, RecursiveMode::Recursive);
         }
@@ -250,10 +259,11 @@ pub fn run(mailbox_cfgs: &[&Mailbox], smtp: &Smtp) -> Result<()> {
     let result = run_loop(
         &mut terminal,
         mailbox_cfgs,
+        &canonical_paths,
         signature.as_deref(),
         thanks.as_deref(),
         smtp,
-        new_mail,
+        rx,
     );
 
     drop(watcher);
@@ -268,38 +278,109 @@ pub fn run(mailbox_cfgs: &[&Mailbox], smtp: &Smtp) -> Result<()> {
 fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     mailbox_cfgs: &[&Mailbox],
+    canonical_paths: &[PathBuf],
     signature: Option<&str>,
     thanks: Option<&str>,
     smtp: &Smtp,
-    new_mail: Arc<AtomicBool>,
+    fs_events: mpsc::Receiver<notify::Event>,
 ) -> Result<()> {
     let labels: Vec<&str> = mailbox_cfgs.iter().map(|mb| mb.label.as_str()).collect();
 
-    let build_entries = |cfgs: &[&Mailbox]| -> Vec<Vec<Entry>> {
-        cfgs.iter()
-            .map(|mb| {
+    // Build the initial per-mailbox caches using the canonical paths so that
+    // the paths stored in EmailMeta match what notify will report in events.
+    let mut caches: Vec<MailCache> = canonical_paths
+        .iter()
+        .map(|p| {
+            p.to_str()
+                .and_then(|s| MailCache::build(s).ok())
+                .unwrap_or(MailCache { threads: vec![] })
+        })
+        .collect();
+
+    let flatten_all = |caches: &[MailCache]| -> Vec<Vec<Entry>> {
+        caches
+            .iter()
+            .map(|cache| {
                 let mut v = Vec::new();
-                if let Ok(cache) = MailCache::build(&mb.path) {
-                    flatten(&cache.threads, 0, &mut v);
-                }
+                flatten(&cache.threads, 0, &mut v);
                 v
             })
             .collect()
     };
 
-    let mut mailbox_entries = build_entries(mailbox_cfgs);
+    let mut mailbox_entries = flatten_all(&caches);
     let mut app = App::new(labels.len());
 
     loop {
-        if new_mail.swap(false, Ordering::Relaxed) {
-            mailbox_entries = build_entries(mailbox_cfgs);
-            for (i, state) in app.thread_list_states.iter_mut().enumerate() {
+        // Drain all pending filesystem events and apply them incrementally.
+        let mut changed: Vec<bool> = vec![false; mailbox_cfgs.len()];
+        for ev in fs_events.try_iter() {
+            // Classify the event into per-path actions.
+            // Renames (tmp/ -> cur/, or new/ -> cur/ for mark_seen) appear as
+            // Modify(Name(_)) events. The convention is: for Both, paths = [from, to];
+            // for From/To, a single path in the respective role.
+            // We treat the From/source path as a remove and the To/dest as a create,
+            // but only when those paths land inside new/ or cur/.
+            let actions: Vec<(&PathBuf, bool)> = match ev.kind {
+                EventKind::Create(_) => ev.paths.iter().map(|p| (p, true)).collect(),
+                EventKind::Remove(_) => ev.paths.iter().map(|p| (p, false)).collect(),
+                EventKind::Modify(ModifyKind::Name(notify::event::RenameMode::Both)) => {
+                    // paths = [from, to]
+                    let mut v = Vec::new();
+                    if let Some(from) = ev.paths.first() {
+                        v.push((from, false));
+                    }
+                    if let Some(to) = ev.paths.last() {
+                        v.push((to, true));
+                    }
+                    v
+                }
+                EventKind::Modify(ModifyKind::Name(notify::event::RenameMode::From)) => {
+                    ev.paths.iter().map(|p| (p, false)).collect()
+                }
+                EventKind::Modify(ModifyKind::Name(_)) => {
+                    // To or Any — treat as create
+                    ev.paths.iter().map(|p| (p, true)).collect()
+                }
+                _ => vec![],
+            };
+
+            for (path, is_create) in actions {
+                // Only act on files that live directly inside new/ or cur/.
+                let parent_name = path
+                    .parent()
+                    .and_then(|p| p.file_name())
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("");
+                if parent_name != "new" && parent_name != "cur" {
+                    continue;
+                }
+                if let Some(mb_idx) = canonical_paths.iter().position(|cp| path.starts_with(cp)) {
+                    if is_create {
+                        caches[mb_idx].insert_file(path);
+                    } else {
+                        caches[mb_idx].remove_file(path);
+                    }
+                    changed[mb_idx] = true;
+                }
+            }
+        }
+
+        // Re-flatten only the mailboxes that actually changed.
+        for (i, did_change) in changed.iter().enumerate() {
+            if *did_change {
+                let mut v = Vec::new();
+                flatten(&caches[i].threads, 0, &mut v);
+                mailbox_entries[i] = v;
+                // Clamp selection if the list shrank.
                 let len = mailbox_entries[i].len();
-                if let Some(sel) = state.selected()
+                if let Some(sel) = app.thread_list_states[i].selected()
                     && sel >= len
                     && len > 0
                 {
-                    state.select(Some(len - 1));
+                    app.thread_list_states[i].select(Some(len - 1));
+                } else if len == 0 {
+                    app.thread_list_states[i].select(None);
                 }
             }
         }

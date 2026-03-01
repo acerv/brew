@@ -188,9 +188,98 @@ impl MailCache {
             .map(|m| m.into_owned())
             .with_context(|| format!("failed to parse mail file: {}", path.display()))
     }
+
+    /// Parse headers from a single new Maildir file and insert it into the
+    /// thread tree, then re-sort.  A no-op if the file cannot be read or has
+    /// no `Message-ID`.
+    ///
+    /// This is the incremental counterpart to `build`: instead of re-scanning
+    /// the whole directory, only the one new file is processed.
+    pub fn insert_file(&mut self, path: &std::path::Path) {
+        let bytes = match fs::read(path) {
+            Ok(b) => b,
+            Err(_) => return,
+        };
+        let parser = MessageParser::default();
+        let parsed = match parser.parse_headers(&bytes) {
+            Some(p) => p,
+            None => return,
+        };
+        let id = match parsed.message_id() {
+            Some(id) => id.to_string(),
+            None => return,
+        };
+
+        // Skip if we already know this Message-ID (duplicate file).
+        if self.find_by_id(&id).is_some() {
+            return;
+        }
+
+        let meta = EmailMeta {
+            message_id: id.clone(),
+            subject: parsed.subject().unwrap_or_default().to_string(),
+            timestamp: parsed.date().map(|d| d.to_timestamp()),
+            path: path.to_path_buf(),
+        };
+        let thread = Rc::new(EmailThread::new(meta));
+
+        // Locate the parent in the existing tree, if any.
+        if let Some(reply_to_id) = parsed.in_reply_to().as_text()
+            && let Some(parent) = self.find_by_id(reply_to_id)
+        {
+            parent.replies.borrow_mut().push(thread.clone());
+            sort_threads(&mut parent.replies.borrow_mut());
+            return;
+        }
+
+        // No parent found — add as a root thread and re-sort roots.
+        self.threads.push(thread);
+        sort_threads(&mut self.threads);
+    }
+
+    /// Remove the thread node whose on-disk path matches `path` from the tree.
+    /// Also removes any children of that node (they become unreachable).
+    /// A no-op if no node matches.
+    pub fn remove_file(&mut self, path: &std::path::Path) {
+        remove_thread_by_path(&mut self.threads, path);
+    }
+
+    /// Walk the entire thread tree and return a shared reference to the node
+    /// with the given `Message-ID`, or `None`.
+    fn find_by_id(&self, id: &str) -> Option<Rc<EmailThread>> {
+        find_thread_by_id(&self.threads, id)
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+
+/// Recursively search `threads` for a node with the given `Message-ID`.
+fn find_thread_by_id(threads: &[Rc<EmailThread>], id: &str) -> Option<Rc<EmailThread>> {
+    for t in threads {
+        if t.data.message_id == id {
+            return Some(t.clone());
+        }
+        if let Some(found) = find_thread_by_id(&t.replies.borrow(), id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Recursively remove the first node whose `EmailMeta::path` equals `path`.
+/// Returns `true` when a node was removed (so callers can stop early).
+fn remove_thread_by_path(threads: &mut Vec<Rc<EmailThread>>, path: &std::path::Path) -> bool {
+    if let Some(pos) = threads.iter().position(|t| t.data.path == path) {
+        threads.remove(pos);
+        return true;
+    }
+    for t in threads.iter() {
+        if remove_thread_by_path(&mut t.replies.borrow_mut(), path) {
+            return true;
+        }
+    }
+    false
+}
 
 /// Sort `threads` descending by timestamp (latest first), then recurse into
 /// replies. Emails with no timestamp sort after all dated ones.
