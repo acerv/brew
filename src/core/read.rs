@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@suse.com>
 //! Maildir read-status detection.
 //!
 //! Maildir encodes message flags in the filename itself:

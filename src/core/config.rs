@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@suse.com>
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::PathBuf;

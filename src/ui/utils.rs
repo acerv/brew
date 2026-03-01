@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@suse.com>
 use time::OffsetDateTime;
 use time::macros::format_description;
 

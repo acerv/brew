@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@suse.com>
 use anyhow::{Context, Result};
 use mail_parser::mailbox::maildir::MessageIterator;
 use mail_parser::{Message, MessageParser};

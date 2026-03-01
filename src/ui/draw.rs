@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@suse.com>
 use super::app::{App, Entry};
 use super::tab::EmailTab;
 use super::utils::format_timestamp;
