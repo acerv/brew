@@ -207,7 +207,7 @@ fn draw_email(frame: &mut ratatui::Frame, tab: &mut EmailTab, area: ratatui::lay
     ));
     frame.render_widget(header, chunks[0]);
 
-    let body_lines = highlight_body(&tab.body);
+    let body_lines = &tab.body_lines;
 
     let inner_width = chunks[1].width.saturating_sub(2) as usize;
     let visible_height = chunks[1].height.saturating_sub(2) as usize;
@@ -229,7 +229,7 @@ fn draw_email(frame: &mut ratatui::Frame, tab: &mut EmailTab, area: ratatui::lay
     tab.scroll_max = total_lines.saturating_sub(visible_height) as u16;
     tab.scroll = tab.scroll.min(tab.scroll_max);
 
-    let body = Paragraph::new(body_lines)
+    let body = Paragraph::new(body_lines.to_vec())
         .block(Block::default().borders(Borders::ALL))
         .wrap(Wrap { trim: false })
         .scroll((tab.scroll, 0));
@@ -237,60 +237,6 @@ fn draw_email(frame: &mut ratatui::Frame, tab: &mut EmailTab, area: ratatui::lay
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────
-
-/// Convert the full body string into a `Vec<Line>` with diff syntax highlighting.
-///
-/// Tabs are expanded to spaces (8-wide) before styling because ratatui treats
-/// tab as a zero-width control character and drops it from the output.
-fn highlight_body(body: &str) -> Vec<Line<'static>> {
-    body.lines()
-        .map(|raw| {
-            let expanded = expand_tabs(raw);
-            highlight_line_owned(expanded)
-        })
-        .collect()
-}
-
-/// Expand tab characters to 8-space tab stops.
-fn expand_tabs(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 8);
-    let mut col = 0usize;
-    for c in s.chars() {
-        if c == '\t' {
-            let spaces = 8 - (col % 8);
-            for _ in 0..spaces {
-                out.push(' ');
-            }
-            col += spaces;
-        } else {
-            out.push(c);
-            col += 1;
-        }
-    }
-    out
-}
-
-/// Takes an owned `String` and returns a syntax-highlighted `Line<'static>`.
-fn highlight_line_owned(raw: String) -> Line<'static> {
-    let style = if raw.starts_with("---") || raw.starts_with("--- ") {
-        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
-    } else if raw.starts_with("+++") || raw.starts_with("+++ ") {
-        Style::default()
-            .fg(Color::Green)
-            .add_modifier(Modifier::BOLD)
-    } else if raw.starts_with("@@") {
-        Style::default().fg(Color::Cyan)
-    } else if raw.starts_with('-') {
-        Style::default().fg(Color::Red)
-    } else if raw.starts_with('+') {
-        Style::default().fg(Color::Green)
-    } else if raw.starts_with('>') {
-        Style::default().fg(Color::Blue)
-    } else {
-        Style::default()
-    };
-    Line::from(Span::styled(raw, style))
-}
 
 /// Wrap a header field value into one or more `Line`s.
 ///

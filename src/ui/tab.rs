@@ -2,8 +2,10 @@
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@suse.com>
 use crate::core::cache::{EmailMeta, MailCache};
 use anyhow::Result;
+use ratatui::text::Line;
 use std::path::{Path, PathBuf};
 
+use super::highlight::highlight_body;
 use super::utils::format_timestamp;
 
 /// Format an address list (From / To / Cc) into a single comma-separated string.
@@ -15,6 +17,9 @@ pub struct EmailTab {
     pub cc: String,
     pub date: String,
     pub body: String,
+    /// Pre-processed body lines with diff syntax highlighting and tab expansion.
+    /// Built once in [`EmailTab::from_meta_at`]; reused on every render frame.
+    pub body_lines: Vec<Line<'static>>,
     pub message_id: Option<String>,
     /// Path to the on-disk Maildir file backing this tab.
     pub path: PathBuf,
@@ -47,6 +52,7 @@ impl EmailTab {
         };
 
         let message_id = msg.message_id().map(|s| s.to_owned());
+        let body_lines = highlight_body(&body);
 
         Ok(Self {
             title,
@@ -55,6 +61,7 @@ impl EmailTab {
             cc,
             date,
             body,
+            body_lines,
             message_id,
             path: path.to_path_buf(),
             scroll: 0,
