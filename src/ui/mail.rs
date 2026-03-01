@@ -154,7 +154,7 @@ pub fn compose_new(
 
     let to_refs: Vec<&str> = to_addrs.iter().map(|s| s.as_str()).collect();
     let cc_refs: Vec<&str> = cc_addrs.iter().map(|s| s.as_str()).collect();
-    if let Err(e) = send_message(smtp, &to_refs, &cc_refs, &subject, body) {
+    if let Err(e) = send_message(smtp, &to_refs, &cc_refs, &subject, body, None) {
         show_error(&e.to_string(), terminal)?;
     }
 
@@ -177,22 +177,30 @@ fn compose_and_send(
     terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>,
 ) -> Result<()> {
     let self_addr = smtp.username.as_str();
-    let mut to_addrs: Vec<String> = bare_address(&tab.from)
-        .map(str::to_string)
-        .into_iter()
-        .collect();
-    for a in split_addresses(&tab.to, self_addr) {
-        if !to_addrs.iter().any(|x| x.eq_ignore_ascii_case(&a)) {
-            to_addrs.push(a);
+
+    // Build To list: keep full "Name <addr>" form for display in the draft.
+    // Use bare_address only for deduplication comparisons.
+    // Always include the original sender in To, even if it is ourselves.
+    let mut to_addrs: Vec<String> = full_addresses(&tab.from, "");
+    for addr in full_addresses(&tab.to, self_addr) {
+        let bare = bare_address(&addr).unwrap_or(&addr).to_string();
+        if !to_addrs
+            .iter()
+            .any(|x| bare_address(x).unwrap_or(x).eq_ignore_ascii_case(&bare))
+        {
+            to_addrs.push(addr);
         }
     }
-    let cc_addrs = split_addresses(&tab.cc, self_addr);
+    let cc_addrs = full_addresses(&tab.cc, self_addr);
 
     let subject = if tab.title.starts_with("Re:") || tab.title.starts_with("re:") {
         tab.title.clone()
     } else {
         format!("Re: {}", tab.title)
     };
+
+    // The In-Reply-To value written into the draft (and later parsed back).
+    let in_reply_to_value: Option<String> = tab.message_id.as_ref().map(|mid| format!("<{}>", mid));
 
     let mut header_count = 2usize; // To + Subject
     let mut draft = String::new();
@@ -202,8 +210,8 @@ fn compose_and_send(
         draft.push_str(&format!("Cc: {}\n", cc_addrs.join(", ")));
         header_count += 1;
     }
-    if let Some(ref mid) = tab.message_id {
-        draft.push_str(&format!("In-Reply-To: <{}>\n", mid));
+    if let Some(ref irt) = in_reply_to_value {
+        draft.push_str(&format!("In-Reply-To: {}\n", irt));
         header_count += 1;
     }
     draft.push_str(BODY_SENTINEL);
@@ -256,9 +264,36 @@ fn compose_and_send(
         .unwrap_or_else(|| edited.clone());
     let body = body.trim_start_matches('\n');
 
-    let to_refs: Vec<&str> = to_addrs.iter().map(|s| s.as_str()).collect();
-    let cc_refs: Vec<&str> = cc_addrs.iter().map(|s| s.as_str()).collect();
-    if let Err(e) = send_message(smtp, &to_refs, &cc_refs, &subject, body) {
+    // Re-parse To, Cc, and In-Reply-To from the (possibly edited) header section.
+    // This ensures any addresses the user typed or changed in the editor are used.
+    let mut final_to: Vec<String> = Vec::new();
+    let mut final_cc: Vec<String> = Vec::new();
+    let mut in_reply_to_sent: Option<String> = None;
+    for line in edited.lines().take_while(|l| *l != BODY_SENTINEL) {
+        if let Some(val) = line.strip_prefix("To:") {
+            final_to = full_addresses(val, "");
+        } else if let Some(val) = line.strip_prefix("Cc:") {
+            final_cc = full_addresses(val, "");
+        } else if let Some(val) = line.strip_prefix("In-Reply-To:") {
+            in_reply_to_sent = Some(val.trim().to_string());
+        }
+    }
+
+    // Abort silently if To ended up empty (user cleared it).
+    if final_to.is_empty() {
+        return Ok(());
+    }
+
+    let to_refs: Vec<&str> = final_to.iter().map(|s| s.as_str()).collect();
+    let cc_refs: Vec<&str> = final_cc.iter().map(|s| s.as_str()).collect();
+    if let Err(e) = send_message(
+        smtp,
+        &to_refs,
+        &cc_refs,
+        &subject,
+        body,
+        in_reply_to_sent.as_deref(),
+    ) {
         show_error(&e.to_string(), terminal)?;
     }
 
@@ -268,11 +303,23 @@ fn compose_and_send(
 /// Send a message via SMTP using lettre.
 ///
 /// `to` must be non-empty. `cc` may be empty.
-fn send_message(smtp: &Smtp, to: &[&str], cc: &[&str], subject: &str, body: &str) -> Result<()> {
+/// `in_reply_to` is the raw `In-Reply-To` header value (e.g. `"<msg-id@host>"`).
+fn send_message(
+    smtp: &Smtp,
+    to: &[&str],
+    cc: &[&str],
+    subject: &str,
+    body: &str,
+    in_reply_to: Option<&str>,
+) -> Result<()> {
     use anyhow::anyhow;
 
+    let from_str = match &smtp.name {
+        Some(name) => format!("{} <{}>", name, smtp.username),
+        None => smtp.username.clone(),
+    };
     let mut builder = Message::builder().from(
-        smtp.username
+        from_str
             .parse()
             .map_err(|e| anyhow!("invalid From address: {e}"))?,
     );
@@ -285,6 +332,9 @@ fn send_message(smtp: &Smtp, to: &[&str], cc: &[&str], subject: &str, body: &str
         builder = builder.cc(addr
             .parse()
             .map_err(|e| anyhow!("invalid Cc address {addr}: {e}"))?);
+    }
+    if let Some(irt) = in_reply_to {
+        builder = builder.in_reply_to(irt.to_string());
     }
     let email = builder
         .subject(subject)
@@ -443,12 +493,52 @@ fn bare_address(s: &str) -> Option<&str> {
     if addr.contains('@') { Some(addr) } else { None }
 }
 
-/// Split a comma-separated address list (as produced by `format_addr_list`)
-/// into individual bare `user@host` addresses, excluding `self_addr`.
-fn split_addresses(list: &str, self_addr: &str) -> Vec<String> {
-    list.split(',')
-        .filter_map(|s| bare_address(s.trim()))
-        .map(str::to_string)
-        .filter(|a| !a.eq_ignore_ascii_case(self_addr))
+/// Return the addresses from a comma-separated list as display strings.
+///
+/// Each entry is kept as `"Name <addr>"` when a display name is present,
+/// or falls back to the bare `addr` otherwise.
+/// Entries whose bare address matches `self_addr` are excluded.
+fn full_addresses(list: &str, self_addr: &str) -> Vec<String> {
+    // Split on commas outside angle brackets so "Doe, John <j@x.com>" stays intact.
+    let mut tokens: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0u32;
+    for ch in list.chars() {
+        match ch {
+            '<' => {
+                depth += 1;
+                current.push(ch);
+            }
+            '>' => {
+                depth = depth.saturating_sub(1);
+                current.push(ch);
+            }
+            ',' if depth == 0 => {
+                let t = current.trim().to_string();
+                if !t.is_empty() {
+                    tokens.push(t);
+                }
+                current.clear();
+            }
+            _ => {
+                current.push(ch);
+            }
+        }
+    }
+    let t = current.trim().to_string();
+    if !t.is_empty() {
+        tokens.push(t);
+    }
+
+    tokens
+        .into_iter()
+        .filter_map(|s| {
+            let bare = bare_address(&s)?.to_string();
+            if bare.eq_ignore_ascii_case(self_addr) {
+                return None;
+            }
+            // Prefer "Name <addr>" if the token has a display name; otherwise bare addr.
+            Some(if s.contains('<') { s } else { bare })
+        })
         .collect()
 }

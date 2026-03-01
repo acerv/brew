@@ -15,6 +15,7 @@ pub struct Smtp {
     pub host: String,
     pub port: u16,
     pub username: String,
+    pub name: Option<String>,
     pub password: String,
 }
 
