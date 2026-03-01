@@ -188,7 +188,7 @@ fn draw_list(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, state: Lis
             } else {
                 e.thread.data.subject.clone()
             };
-            let subject_avail = subject_w.saturating_sub(indent.len());
+            let subject_avail = subject_w.saturating_sub(indent.chars().count());
             let subject_padded = fit(&subject, subject_avail);
             let eff_path = seen_paths
                 .get(&e.thread.data.message_id)
@@ -208,7 +208,7 @@ fn draw_list(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, state: Lis
                 Span::styled(subject_padded, text_style),
                 Span::raw(" "),
                 Span::styled(
-                    humanize_date(e.thread.data.timestamp),
+                    format!("{:<DATE_W$}", humanize_date(e.thread.data.timestamp)),
                     Style::default().fg(Color::Cyan),
                 ),
             ]))
