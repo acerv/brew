@@ -24,6 +24,14 @@ use super::draw::draw;
 use super::mail::{compose_new, delete_mail, reply, thanks_reply};
 use super::tab::EmailTab;
 
+// ── search field discriminant ─────────────────────────────────────────────────
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum SearchField {
+    Subject,
+    Sender,
+}
+
 // ── flat list entry ───────────────────────────────────────────────────────────
 
 pub struct Entry {
@@ -63,10 +71,14 @@ pub struct App {
     /// The last sync error message, if any. `None` when the last sync
     /// succeeded or no sync has run yet.
     pub sync_error: Option<String>,
-    /// Current subject search query. Empty string means no filter.
+    /// Current subject search query (`/`). Empty string means no filter.
     pub search_query: String,
+    /// Current sender search query (`\`). Empty string means no filter.
+    pub sender_query: String,
     /// When `true`, the user is actively typing a search query.
     pub search_active: bool,
+    /// Which field is being searched when `search_active` is true.
+    pub search_field: SearchField,
 }
 
 impl App {
@@ -92,7 +104,9 @@ impl App {
             unread_only: vec![false; mailbox_count],
             sync_error: None,
             search_query: String::new(),
+            sender_query: String::new(),
             search_active: false,
+            search_field: SearchField::Subject,
         }
     }
 
@@ -236,10 +250,12 @@ impl App {
 fn filter_mailbox(
     entries: &[Entry],
     unread_only: bool,
-    search_query: &str,
+    subject_query: &str,
+    sender_query: &str,
     seen: &HashMap<String, PathBuf>,
 ) -> Vec<Entry> {
-    let q = search_query.to_lowercase();
+    let sq = subject_query.to_lowercase();
+    let fq = sender_query.to_lowercase();
     entries
         .iter()
         .filter(|e| {
@@ -252,7 +268,10 @@ fn filter_mailbox(
                     return false;
                 }
             }
-            if !q.is_empty() && !e.thread.data.subject.to_lowercase().contains(&q) {
+            if !sq.is_empty() && !e.thread.data.subject.to_lowercase().contains(&sq) {
+                return false;
+            }
+            if !fq.is_empty() && !e.thread.data.from.to_lowercase().contains(&fq) {
                 return false;
             }
             true
@@ -267,13 +286,14 @@ fn filter_mailbox(
 fn apply_all_filters(
     entries: &[Vec<Entry>],
     unread_only: &[bool],
-    search_query: &str,
+    subject_query: &str,
+    sender_query: &str,
     seen: &HashMap<String, PathBuf>,
 ) -> Vec<Vec<Entry>> {
     entries
         .iter()
         .enumerate()
-        .map(|(i, v)| filter_mailbox(v, unread_only[i], search_query, seen))
+        .map(|(i, v)| filter_mailbox(v, unread_only[i], subject_query, sender_query, seen))
         .collect()
 }
 
@@ -390,6 +410,7 @@ fn run_loop(
         &mailbox_entries,
         &app.unread_only,
         &app.search_query,
+        &app.sender_query,
         &app.seen_paths,
     );
 
@@ -467,6 +488,7 @@ fn run_loop(
                     &mailbox_entries[i],
                     app.unread_only[i],
                     &app.search_query,
+                    &app.sender_query,
                     &app.seen_paths,
                 );
                 // Clamp selection if the visible list shrank.
@@ -518,28 +540,34 @@ fn run_loop(
                 let mb = app.selected_mailbox;
                 if app.search_active {
                     // ── search input ──
+                    let refilter = |app: &App| {
+                        apply_all_filters(
+                            &mailbox_entries,
+                            &app.unread_only,
+                            &app.search_query,
+                            &app.sender_query,
+                            &app.seen_paths,
+                        )
+                    };
                     match key.code {
                         KeyCode::Esc => {
                             app.search_active = false;
-                            app.search_query.clear();
-                            filtered_entries = apply_all_filters(
-                                &mailbox_entries,
-                                &app.unread_only,
-                                &app.search_query,
-                                &app.seen_paths,
-                            );
+                            match app.search_field {
+                                SearchField::Subject => app.search_query.clear(),
+                                SearchField::Sender => app.sender_query.clear(),
+                            }
+                            filtered_entries = refilter(&app);
                             let len = filtered_entries[mb].len();
                             app.thread_list_states[mb].select(if len > 0 { Some(0) } else { None });
                         }
                         KeyCode::Enter => {
+                            let is_empty = match app.search_field {
+                                SearchField::Subject => app.search_query.is_empty(),
+                                SearchField::Sender => app.sender_query.is_empty(),
+                            };
                             app.search_active = false;
-                            if app.search_query.is_empty() {
-                                filtered_entries = apply_all_filters(
-                                    &mailbox_entries,
-                                    &app.unread_only,
-                                    "",
-                                    &app.seen_paths,
-                                );
+                            if is_empty {
+                                filtered_entries = refilter(&app);
                                 let len = filtered_entries[mb].len();
                                 app.thread_list_states[mb].select(if len > 0 {
                                     Some(0)
@@ -549,24 +577,24 @@ fn run_loop(
                             }
                         }
                         KeyCode::Backspace => {
-                            app.search_query.pop();
-                            filtered_entries = apply_all_filters(
-                                &mailbox_entries,
-                                &app.unread_only,
-                                &app.search_query,
-                                &app.seen_paths,
-                            );
+                            match app.search_field {
+                                SearchField::Subject => {
+                                    app.search_query.pop();
+                                }
+                                SearchField::Sender => {
+                                    app.sender_query.pop();
+                                }
+                            }
+                            filtered_entries = refilter(&app);
                             let len = filtered_entries[mb].len();
                             app.thread_list_states[mb].select(if len > 0 { Some(0) } else { None });
                         }
                         KeyCode::Char(c) => {
-                            app.search_query.push(c);
-                            filtered_entries = apply_all_filters(
-                                &mailbox_entries,
-                                &app.unread_only,
-                                &app.search_query,
-                                &app.seen_paths,
-                            );
+                            match app.search_field {
+                                SearchField::Subject => app.search_query.push(c),
+                                SearchField::Sender => app.sender_query.push(c),
+                            }
+                            filtered_entries = refilter(&app);
                             let len = filtered_entries[mb].len();
                             app.thread_list_states[mb].select(if len > 0 { Some(0) } else { None });
                         }
@@ -579,7 +607,13 @@ fn run_loop(
                         KeyCode::Char('Q') => break,
                         KeyCode::Char('/') => {
                             app.search_active = true;
+                            app.search_field = SearchField::Subject;
                             app.search_query.clear();
+                        }
+                        KeyCode::Char('\\') => {
+                            app.search_active = true;
+                            app.search_field = SearchField::Sender;
+                            app.sender_query.clear();
                         }
                         KeyCode::Char('j') | KeyCode::Down => app.thread_down(&filtered_entries),
                         KeyCode::Char('k') | KeyCode::Up => app.thread_up(),
@@ -629,6 +663,7 @@ fn run_loop(
                                 &mailbox_entries[mb],
                                 true,
                                 &app.search_query,
+                                &app.sender_query,
                                 &app.seen_paths,
                             );
                             let len = filtered_entries[mb].len();
@@ -640,6 +675,7 @@ fn run_loop(
                                 &mailbox_entries[mb],
                                 false,
                                 &app.search_query,
+                                &app.sender_query,
                                 &app.seen_paths,
                             );
                             let len = filtered_entries[mb].len();

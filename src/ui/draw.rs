@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@suse.com>
-use super::app::{App, Entry};
+use super::app::{App, Entry, SearchField};
 use super::tab::EmailTab;
 use crate::core::date::humanize_date;
 use crate::core::read::is_unread;
@@ -25,6 +25,7 @@ struct ListViewState<'a> {
     seen_paths: &'a HashMap<String, PathBuf>,
     unread_only: bool,
     search_query: &'a str,
+    sender_query: &'a str,
 }
 
 pub fn draw(
@@ -76,6 +77,7 @@ pub fn draw(
                 seen_paths: &app.seen_paths,
                 unread_only,
                 search_query: &app.search_query,
+                sender_query: &app.sender_query,
             },
         );
         let entries = &mailbox_entries[sel];
@@ -84,20 +86,25 @@ pub fn draw(
         let status = if let Some(err) = &app.sync_error {
             Paragraph::new(format!(" sync error: {}", err)).style(Style::default().fg(Color::Red))
         } else if app.search_active {
-            Paragraph::new(format!(" /{}_", app.search_query))
-                .style(Style::default().fg(Color::Yellow))
-        } else {
-            let search_hint = if !app.search_query.is_empty() {
-                format!("  [/{}]", app.search_query)
-            } else {
-                String::new()
+            let prompt = match app.search_field {
+                SearchField::Subject => format!(" /{}_", app.search_query),
+                SearchField::Sender => format!(" \\{}_", app.sender_query),
             };
+            Paragraph::new(prompt).style(Style::default().fg(Color::Yellow))
+        } else {
+            let mut hints = String::new();
+            if !app.search_query.is_empty() {
+                hints += &format!("  [/{}]", app.search_query);
+            }
+            if !app.sender_query.is_empty() {
+                hints += &format!("  [\\{}]", app.sender_query);
+            }
             Paragraph::new(format!(
-                " {}/{}{}{} — j/k move  J/K mailbox  Enter open  r reply  R reply-empty  N show-unread  n show-all  / search  h/l tabs  Q quit",
+                " {}/{}{}{} — j/k move  J/K mailbox  Enter open  r reply  R reply-empty  N show-unread  n show-all  / search  \\ sender  h/l tabs  Q quit",
                 selected,
                 entries.len(),
                 filter_hint,
-                search_hint,
+                hints,
             ))
             .style(Style::default().fg(Color::DarkGray))
         };
@@ -127,6 +134,7 @@ fn draw_list(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, state: Lis
         seen_paths,
         unread_only,
         search_query,
+        sender_query,
     } = state;
     let left_w = (labels.iter().map(|l| l.len()).max().unwrap_or(8) + 18).clamp(16, 40) as u16;
     let panes = Layout::default()
@@ -226,10 +234,11 @@ fn draw_list(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, state: Lis
             ]))
         })
         .collect();
-    let threads_title = if search_query.is_empty() {
-        " Threads ".to_string()
-    } else {
-        format!(" Threads [/{}] ", search_query)
+    let threads_title = match (!search_query.is_empty(), !sender_query.is_empty()) {
+        (true, true) => format!(" Threads [/{} \\{}] ", search_query, sender_query),
+        (true, false) => format!(" Threads [/{}] ", search_query),
+        (false, true) => format!(" Threads [\\{}] ", sender_query),
+        (false, false) => " Threads ".to_string(),
     };
     let thread_list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title(threads_title))
