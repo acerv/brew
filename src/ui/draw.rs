@@ -24,6 +24,7 @@ struct ListViewState<'a> {
     mailbox_entries: &'a [Vec<Entry>],
     seen_paths: &'a HashMap<String, PathBuf>,
     unread_only: bool,
+    search_query: &'a str,
 }
 
 pub fn draw(
@@ -74,6 +75,7 @@ pub fn draw(
                 mailbox_entries,
                 seen_paths: &app.seen_paths,
                 unread_only,
+                search_query: &app.search_query,
             },
         );
         let entries = &mailbox_entries[sel];
@@ -81,12 +83,21 @@ pub fn draw(
         let filter_hint = if unread_only { "  [unread]" } else { "" };
         let status = if let Some(err) = &app.sync_error {
             Paragraph::new(format!(" sync error: {}", err)).style(Style::default().fg(Color::Red))
+        } else if app.search_active {
+            Paragraph::new(format!(" /{}_", app.search_query))
+                .style(Style::default().fg(Color::Yellow))
         } else {
+            let search_hint = if !app.search_query.is_empty() {
+                format!("  [/{}]", app.search_query)
+            } else {
+                String::new()
+            };
             Paragraph::new(format!(
-                " {}/{}{} — j/k move  J/K mailbox  Enter open  r reply  R reply-empty  t thanks  N unread-only  n all  h/l tabs  q quit",
+                " {}/{}{}{} — j/k move  J/K mailbox  Enter open  r reply  R reply-empty  t thanks  N unread-only  n all  / search  h/l tabs  q quit",
                 selected,
                 entries.len(),
                 filter_hint,
+                search_hint,
             ))
             .style(Style::default().fg(Color::DarkGray))
         };
@@ -115,6 +126,7 @@ fn draw_list(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, state: Lis
         mailbox_entries,
         seen_paths,
         unread_only,
+        search_query,
     } = state;
     let left_w = (labels.iter().map(|l| l.len()).max().unwrap_or(8) + 18).clamp(16, 40) as u16;
     let panes = Layout::default()
@@ -214,8 +226,13 @@ fn draw_list(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, state: Lis
             ]))
         })
         .collect();
+    let threads_title = if search_query.is_empty() {
+        " Threads ".to_string()
+    } else {
+        format!(" Threads [/{}] ", search_query)
+    };
     let thread_list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(" Threads "))
+        .block(Block::default().borders(Borders::ALL).title(threads_title))
         .highlight_style(
             Style::default()
                 .bg(Color::Blue)

@@ -63,6 +63,10 @@ pub struct App {
     /// The last sync error message, if any. `None` when the last sync
     /// succeeded or no sync has run yet.
     pub sync_error: Option<String>,
+    /// Current subject search query. Empty string means no filter.
+    pub search_query: String,
+    /// When `true`, the user is actively typing a search query.
+    pub search_active: bool,
 }
 
 impl App {
@@ -87,6 +91,8 @@ impl App {
             seen_paths: HashMap::new(),
             unread_only: vec![false; mailbox_count],
             sync_error: None,
+            search_query: String::new(),
+            search_active: false,
         }
     }
 
@@ -225,6 +231,52 @@ impl App {
     }
 }
 
+// ── filter helpers ────────────────────────────────────────────────────────────
+
+fn filter_mailbox(
+    entries: &[Entry],
+    unread_only: bool,
+    search_query: &str,
+    seen: &HashMap<String, PathBuf>,
+) -> Vec<Entry> {
+    let q = search_query.to_lowercase();
+    entries
+        .iter()
+        .filter(|e| {
+            if unread_only {
+                let eff = seen
+                    .get(&e.thread.data.message_id)
+                    .map(|p| p.as_path())
+                    .unwrap_or(&e.thread.data.path);
+                if !is_unread(eff) {
+                    return false;
+                }
+            }
+            if !q.is_empty() && !e.thread.data.subject.to_lowercase().contains(&q) {
+                return false;
+            }
+            true
+        })
+        .map(|e| Entry {
+            depth: e.depth,
+            thread: e.thread.clone(),
+        })
+        .collect()
+}
+
+fn apply_all_filters(
+    entries: &[Vec<Entry>],
+    unread_only: &[bool],
+    search_query: &str,
+    seen: &HashMap<String, PathBuf>,
+) -> Vec<Vec<Entry>> {
+    entries
+        .iter()
+        .enumerate()
+        .map(|(i, v)| filter_mailbox(v, unread_only[i], search_query, seen))
+        .collect()
+}
+
 // ── event loop ────────────────────────────────────────────────────────────────
 
 pub fn run(mailbox_cfgs: &[&Mailbox], smtp: &Smtp, sync_cfg: Option<&Sync>) -> Result<()> {
@@ -334,39 +386,12 @@ fn run_loop(
     // `filtered_entries` is the view actually shown and navigated.
     // It equals `mailbox_entries` when unread_only[i] is false, and is
     // filtered to unread emails only when true.
-    let apply_filter =
-        |entries: &[Vec<Entry>], app: &App, seen: &HashMap<String, PathBuf>| -> Vec<Vec<Entry>> {
-            entries
-                .iter()
-                .enumerate()
-                .map(|(i, v)| {
-                    if app.unread_only[i] {
-                        v.iter()
-                            .filter(|e| {
-                                let eff = seen
-                                    .get(&e.thread.data.message_id)
-                                    .map(|p| p.as_path())
-                                    .unwrap_or(&e.thread.data.path);
-                                is_unread(eff)
-                            })
-                            .map(|e| Entry {
-                                depth: e.depth,
-                                thread: e.thread.clone(),
-                            })
-                            .collect()
-                    } else {
-                        v.iter()
-                            .map(|e| Entry {
-                                depth: e.depth,
-                                thread: e.thread.clone(),
-                            })
-                            .collect()
-                    }
-                })
-                .collect()
-        };
-
-    let mut filtered_entries = apply_filter(&mailbox_entries, &app, &app.seen_paths.clone());
+    let mut filtered_entries = apply_all_filters(
+        &mailbox_entries,
+        &app.unread_only,
+        &app.search_query,
+        &app.seen_paths,
+    );
 
     let tick = std::time::Duration::from_secs(60);
     let mut last_tick = std::time::Instant::now();
@@ -438,31 +463,12 @@ fn run_loop(
                 flatten(&caches[i].threads, 0, &mut v);
                 mailbox_entries[i] = v;
                 // Re-apply the unread filter for this mailbox.
-                filtered_entries[i] = if app.unread_only[i] {
-                    mailbox_entries[i]
-                        .iter()
-                        .filter(|e| {
-                            let eff = app
-                                .seen_paths
-                                .get(&e.thread.data.message_id)
-                                .map(|p| p.as_path())
-                                .unwrap_or(&e.thread.data.path);
-                            is_unread(eff)
-                        })
-                        .map(|e| Entry {
-                            depth: e.depth,
-                            thread: e.thread.clone(),
-                        })
-                        .collect()
-                } else {
-                    mailbox_entries[i]
-                        .iter()
-                        .map(|e| Entry {
-                            depth: e.depth,
-                            thread: e.thread.clone(),
-                        })
-                        .collect()
-                };
+                filtered_entries[i] = filter_mailbox(
+                    &mailbox_entries[i],
+                    app.unread_only[i],
+                    &app.search_query,
+                    &app.seen_paths,
+                );
                 // Clamp selection if the visible list shrank.
                 let len = filtered_entries[i].len();
                 if let Some(sel) = app.thread_list_states[i].selected()
@@ -485,113 +491,165 @@ fn run_loop(
         }
 
         if let Event::Key(key) = event::read()? {
-            match key.code {
-                KeyCode::Char('h') | KeyCode::Left => {
-                    app.go_left();
-                    continue;
+            // Tab navigation is disabled while typing a search query.
+            if !(app.active == 0 && app.search_active) {
+                match key.code {
+                    KeyCode::Char('h') | KeyCode::Left => {
+                        app.go_left();
+                        continue;
+                    }
+                    KeyCode::Char('l') | KeyCode::Right => {
+                        app.go_right();
+                        continue;
+                    }
+                    KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        app.go_next();
+                        continue;
+                    }
+                    KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        app.go_prev();
+                        continue;
+                    }
+                    _ => {}
                 }
-                KeyCode::Char('l') | KeyCode::Right => {
-                    app.go_right();
-                    continue;
-                }
-                KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    app.go_next();
-                    continue;
-                }
-                KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    app.go_prev();
-                    continue;
-                }
-                _ => {}
             }
 
             if app.active == 0 {
-                // ── list view ──
-                let entries = &filtered_entries[app.selected_mailbox];
-                match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => break,
-                    KeyCode::Char('j') | KeyCode::Down => app.thread_down(&mailbox_entries),
-                    KeyCode::Char('k') | KeyCode::Up => app.thread_up(),
-                    KeyCode::Char('g') => app.thread_home(),
-                    KeyCode::Char('G') => app.thread_end(&mailbox_entries),
-                    KeyCode::PageDown => app.thread_skip(&mailbox_entries, 15),
-                    KeyCode::PageUp => app.thread_skip(&mailbox_entries, -15),
-                    KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        app.thread_skip(&mailbox_entries, 15);
-                    }
-                    KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        app.thread_skip(&mailbox_entries, -15);
-                    }
-                    KeyCode::Char('J') => app.mailbox_down(labels.len()),
-                    KeyCode::Char('K') => app.mailbox_up(),
-                    KeyCode::Enter => {
-                        if let Some(tab) = app.resolve_selected(entries) {
-                            app.emails.push(tab);
-                            app.active = app.tab_count() - 1;
+                let mb = app.selected_mailbox;
+                if app.search_active {
+                    // ── search input ──
+                    match key.code {
+                        KeyCode::Esc => {
+                            app.search_active = false;
+                            app.search_query.clear();
+                            filtered_entries = apply_all_filters(
+                                &mailbox_entries,
+                                &app.unread_only,
+                                &app.search_query,
+                                &app.seen_paths,
+                            );
+                            let len = filtered_entries[mb].len();
+                            app.thread_list_states[mb].select(if len > 0 { Some(0) } else { None });
                         }
-                    }
-                    KeyCode::Char('r') => {
-                        if let Some(tab) = app.resolve_selected(entries) {
-                            let _ = reply(&tab, true, signature, smtp, terminal);
+                        KeyCode::Enter => {
+                            app.search_active = false;
+                            if app.search_query.is_empty() {
+                                filtered_entries = apply_all_filters(
+                                    &mailbox_entries,
+                                    &app.unread_only,
+                                    "",
+                                    &app.seen_paths,
+                                );
+                                let len = filtered_entries[mb].len();
+                                app.thread_list_states[mb].select(if len > 0 {
+                                    Some(0)
+                                } else {
+                                    None
+                                });
+                            }
                         }
-                    }
-                    KeyCode::Char('R') => {
-                        if let Some(tab) = app.resolve_selected(entries) {
-                            let _ = reply(&tab, false, signature, smtp, terminal);
+                        KeyCode::Backspace => {
+                            app.search_query.pop();
+                            filtered_entries = apply_all_filters(
+                                &mailbox_entries,
+                                &app.unread_only,
+                                &app.search_query,
+                                &app.seen_paths,
+                            );
+                            let len = filtered_entries[mb].len();
+                            app.thread_list_states[mb].select(if len > 0 { Some(0) } else { None });
                         }
-                    }
-                    KeyCode::Char('t') => {
-                        if let Some(thanks_body) = thanks
-                            && let Some(tab) = app.resolve_selected(entries)
-                        {
-                            let _ = thanks_reply(&tab, thanks_body, signature, smtp, terminal);
+                        KeyCode::Char(c) => {
+                            app.search_query.push(c);
+                            filtered_entries = apply_all_filters(
+                                &mailbox_entries,
+                                &app.unread_only,
+                                &app.search_query,
+                                &app.seen_paths,
+                            );
+                            let len = filtered_entries[mb].len();
+                            app.thread_list_states[mb].select(if len > 0 { Some(0) } else { None });
                         }
+                        _ => {}
                     }
-                    KeyCode::Char('D') => {
-                        if let Some(eff_path) = app.effective_path(entries) {
-                            delete_mail(eff_path);
+                } else {
+                    // ── list view ──
+                    let entries = &filtered_entries[mb];
+                    match key.code {
+                        KeyCode::Char('q') | KeyCode::Esc => break,
+                        KeyCode::Char('/') => {
+                            app.search_active = true;
+                            app.search_query.clear();
                         }
+                        KeyCode::Char('j') | KeyCode::Down => app.thread_down(&filtered_entries),
+                        KeyCode::Char('k') | KeyCode::Up => app.thread_up(),
+                        KeyCode::Char('g') => app.thread_home(),
+                        KeyCode::Char('G') => app.thread_end(&filtered_entries),
+                        KeyCode::PageDown => app.thread_skip(&filtered_entries, 15),
+                        KeyCode::PageUp => app.thread_skip(&filtered_entries, -15),
+                        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            app.thread_skip(&filtered_entries, 15);
+                        }
+                        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            app.thread_skip(&filtered_entries, -15);
+                        }
+                        KeyCode::Char('J') => app.mailbox_down(labels.len()),
+                        KeyCode::Char('K') => app.mailbox_up(),
+                        KeyCode::Enter => {
+                            if let Some(tab) = app.resolve_selected(entries) {
+                                app.emails.push(tab);
+                                app.active = app.tab_count() - 1;
+                            }
+                        }
+                        KeyCode::Char('r') => {
+                            if let Some(tab) = app.resolve_selected(entries) {
+                                let _ = reply(&tab, true, signature, smtp, terminal);
+                            }
+                        }
+                        KeyCode::Char('R') => {
+                            if let Some(tab) = app.resolve_selected(entries) {
+                                let _ = reply(&tab, false, signature, smtp, terminal);
+                            }
+                        }
+                        KeyCode::Char('t') => {
+                            if let Some(thanks_body) = thanks
+                                && let Some(tab) = app.resolve_selected(entries)
+                            {
+                                let _ = thanks_reply(&tab, thanks_body, signature, smtp, terminal);
+                            }
+                        }
+                        KeyCode::Char('D') => {
+                            if let Some(eff_path) = app.effective_path(entries) {
+                                delete_mail(eff_path);
+                            }
+                        }
+                        KeyCode::Char('N') => {
+                            app.unread_only[mb] = true;
+                            filtered_entries[mb] = filter_mailbox(
+                                &mailbox_entries[mb],
+                                true,
+                                &app.search_query,
+                                &app.seen_paths,
+                            );
+                            let len = filtered_entries[mb].len();
+                            app.thread_list_states[mb].select(if len > 0 { Some(0) } else { None });
+                        }
+                        KeyCode::Char('n') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            app.unread_only[mb] = false;
+                            filtered_entries[mb] = filter_mailbox(
+                                &mailbox_entries[mb],
+                                false,
+                                &app.search_query,
+                                &app.seen_paths,
+                            );
+                            let len = filtered_entries[mb].len();
+                            app.thread_list_states[mb].select(if len > 0 { Some(0) } else { None });
+                        }
+                        KeyCode::Char('C') => {
+                            let _ = compose_new(signature, smtp, terminal);
+                        }
+                        _ => {}
                     }
-                    KeyCode::Char('N') => {
-                        let mb = app.selected_mailbox;
-                        app.unread_only[mb] = true;
-                        filtered_entries[mb] = mailbox_entries[mb]
-                            .iter()
-                            .filter(|e| {
-                                let eff = app
-                                    .seen_paths
-                                    .get(&e.thread.data.message_id)
-                                    .map(|p| p.as_path())
-                                    .unwrap_or(&e.thread.data.path);
-                                is_unread(eff)
-                            })
-                            .map(|e| Entry {
-                                depth: e.depth,
-                                thread: e.thread.clone(),
-                            })
-                            .collect();
-                        // Reset selection to the first entry.
-                        let len = filtered_entries[mb].len();
-                        app.thread_list_states[mb].select(if len > 0 { Some(0) } else { None });
-                    }
-                    KeyCode::Char('n') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        let mb = app.selected_mailbox;
-                        app.unread_only[mb] = false;
-                        filtered_entries[mb] = mailbox_entries[mb]
-                            .iter()
-                            .map(|e| Entry {
-                                depth: e.depth,
-                                thread: e.thread.clone(),
-                            })
-                            .collect();
-                        // Reset selection to the first entry.
-                        let len = filtered_entries[mb].len();
-                        app.thread_list_states[mb].select(if len > 0 { Some(0) } else { None });
-                    }
-                    KeyCode::Char('C') => {
-                        let _ = compose_new(signature, smtp, terminal);
-                    }
-                    _ => {}
                 }
             } else {
                 // ── email tab view ──
