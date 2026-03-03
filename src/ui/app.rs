@@ -70,7 +70,7 @@ pub struct App {
     pub unread_only: Vec<bool>,
     /// The last sync error message, if any. `None` when the last sync
     /// succeeded or no sync has run yet.
-    pub sync_error: Option<String>,
+    pub status_error: Option<String>,
     /// Current subject search query (`/`). Empty string means no filter.
     pub search_query: String,
     /// Current sender search query (`\`). Empty string means no filter.
@@ -102,7 +102,7 @@ impl App {
             thread_list_states,
             seen_paths: HashMap::new(),
             unread_only: vec![false; mailbox_count],
-            sync_error: None,
+            status_error: None,
             search_query: String::new(),
             sender_query: String::new(),
             search_active: false,
@@ -426,7 +426,7 @@ fn run_loop(
     loop {
         // Drain sync results: None = success (clear error), Some(msg) = failure.
         for msg in sync_rx.try_iter() {
-            app.sync_error = msg;
+            app.status_error = msg;
         }
 
         // Drain all pending filesystem events and apply them incrementally.
@@ -519,6 +519,8 @@ fn run_loop(
         }
 
         if let Event::Key(key) = event::read()? {
+            // Clear any status-bar error on the next keypress.
+            app.status_error = None;
             // Tab navigation is disabled while typing a search query.
             if !(app.active == 0 && app.search_active) {
                 match key.code {
@@ -643,19 +645,27 @@ fn run_loop(
                         }
                         KeyCode::Char('r') => {
                             if let Some(tab) = app.resolve_selected(entries) {
-                                let _ = reply(&tab, true, signature, smtp, terminal);
+                                if let Err(e) = reply(&tab, true, signature, smtp, terminal) {
+                                    app.status_error = Some(e.to_string());
+                                }
                             }
                         }
                         KeyCode::Char('R') => {
                             if let Some(tab) = app.resolve_selected(entries) {
-                                let _ = reply(&tab, false, signature, smtp, terminal);
+                                if let Err(e) = reply(&tab, false, signature, smtp, terminal) {
+                                    app.status_error = Some(e.to_string());
+                                }
                             }
                         }
                         KeyCode::Char('t') => {
                             if let Some(thanks_body) = thanks
                                 && let Some(tab) = app.resolve_selected(entries)
                             {
-                                let _ = thanks_reply(&tab, thanks_body, signature, smtp, terminal);
+                                if let Err(e) =
+                                    thanks_reply(&tab, thanks_body, signature, smtp, terminal)
+                                {
+                                    app.status_error = Some(e.to_string());
+                                }
                             }
                         }
                         KeyCode::Char('D') => {
@@ -688,7 +698,9 @@ fn run_loop(
                             app.thread_list_states[mb].select(if len > 0 { Some(0) } else { None });
                         }
                         KeyCode::Char('C') => {
-                            let _ = compose_new(signature, smtp, terminal);
+                            if let Err(e) = compose_new(signature, smtp, terminal) {
+                                app.status_error = Some(e.to_string());
+                            }
                         }
                         KeyCode::Char('f') => {
                             if let Some((cmd, tx)) = &force_sync {
@@ -751,20 +763,26 @@ fn run_loop(
                         delete_mail(&path);
                     }
                     KeyCode::Char('r') => {
-                        let _ = reply(&app.emails[ei], true, signature, smtp, terminal);
+                        if let Err(e) = reply(&app.emails[ei], true, signature, smtp, terminal) {
+                            app.status_error = Some(e.to_string());
+                        }
                     }
                     KeyCode::Char('R') => {
-                        let _ = reply(&app.emails[ei], false, signature, smtp, terminal);
+                        if let Err(e) = reply(&app.emails[ei], false, signature, smtp, terminal) {
+                            app.status_error = Some(e.to_string());
+                        }
                     }
                     KeyCode::Char('t') => {
                         if let Some(thanks_body) = thanks {
-                            let _ = thanks_reply(
+                            if let Err(e) = thanks_reply(
                                 &app.emails[ei],
                                 thanks_body,
                                 signature,
                                 smtp,
                                 terminal,
-                            );
+                            ) {
+                                app.status_error = Some(e.to_string());
+                            }
                         }
                     }
                     KeyCode::Char('J') => {

@@ -83,8 +83,8 @@ pub fn draw(
         let entries = &mailbox_entries[sel];
         let selected = app.selected_thread().map(|i| i + 1).unwrap_or(0);
         let filter_hint = if unread_only { "  [unread]" } else { "" };
-        let status = if let Some(err) = &app.sync_error {
-            Paragraph::new(format!(" sync error: {}", err)).style(Style::default().fg(Color::Red))
+        let status = if let Some(err) = &app.status_error {
+            Paragraph::new(format!(" error: {}", err)).style(Style::default().fg(Color::Red))
         } else if app.search_active {
             let prompt = match app.search_field {
                 SearchField::Subject => format!(" /{}_", app.search_query),
@@ -112,8 +112,8 @@ pub fn draw(
     } else {
         let ei = app.active - 1;
         draw_email(frame, &mut app.emails[ei], chunks[1]);
-        let status = if let Some(err) = &app.sync_error {
-            Paragraph::new(format!(" sync error: {}", err)).style(Style::default().fg(Color::Red))
+        let status = if let Some(err) = &app.status_error {
+            Paragraph::new(format!(" error: {}", err)).style(Style::default().fg(Color::Red))
         } else {
             Paragraph::new(
                 " j/k scroll  J/K email  h/l tabs  r reply  R reply-empty  Esc back  q close",

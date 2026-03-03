@@ -154,9 +154,7 @@ pub fn compose_new(
 
     let to_refs: Vec<&str> = to_addrs.iter().map(|s| s.as_str()).collect();
     let cc_refs: Vec<&str> = cc_addrs.iter().map(|s| s.as_str()).collect();
-    if let Err(e) = send_message(smtp, &to_refs, &cc_refs, &subject, body, None) {
-        show_error(&e.to_string(), terminal)?;
-    }
+    send_message(smtp, &to_refs, &cc_refs, &subject, body, None)?;
 
     Ok(())
 }
@@ -286,16 +284,14 @@ fn compose_and_send(
 
     let to_refs: Vec<&str> = final_to.iter().map(|s| s.as_str()).collect();
     let cc_refs: Vec<&str> = final_cc.iter().map(|s| s.as_str()).collect();
-    if let Err(e) = send_message(
+    send_message(
         smtp,
         &to_refs,
         &cc_refs,
         &subject,
         body,
         in_reply_to_sent.as_deref(),
-    ) {
-        show_error(&e.to_string(), terminal)?;
-    }
+    )?;
 
     Ok(())
 }
@@ -354,67 +350,6 @@ fn send_message(
         .map_err(|e| anyhow!("SMTP send error: {e}"))?;
 
     Ok(())
-}
-
-// ── dialogs ───────────────────────────────────────────────────────────────────
-
-/// Show a centred error dialog with `msg` and wait for any key to dismiss.
-fn show_error(
-    msg: &str,
-    terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>,
-) -> Result<()> {
-    const MAX_W: usize = 58;
-    let mut wrapped: Vec<String> = Vec::new();
-    for word in msg.split_whitespace() {
-        match wrapped.last_mut() {
-            Some(last) if last.len() + 1 + word.len() <= MAX_W => {
-                last.push(' ');
-                last.push_str(word);
-            }
-            _ => wrapped.push(word.to_string()),
-        }
-    }
-    if wrapped.is_empty() {
-        wrapped.push(String::new());
-    }
-
-    let popup_w: u16 = 68;
-    let popup_h: u16 = (wrapped.len() + 4) as u16;
-
-    loop {
-        terminal.draw(|frame| {
-            let area = frame.area();
-            let x = area.width.saturating_sub(popup_w) / 2;
-            let y = area.height.saturating_sub(popup_h) / 2;
-            let popup_area =
-                ratatui::layout::Rect::new(x, y, popup_w.min(area.width), popup_h.min(area.height));
-
-            use ratatui::widgets::Clear;
-            frame.render_widget(Clear, popup_area);
-
-            let block = Block::default().borders(Borders::ALL).title(Span::styled(
-                " Send failed ",
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-            ));
-            let inner = block.inner(popup_area);
-            frame.render_widget(block, popup_area);
-
-            let mut text: Vec<Line> = wrapped
-                .iter()
-                .map(|l| Line::from(Span::styled(l.as_str(), Style::default().fg(Color::Red))))
-                .collect();
-            text.push(Line::from(""));
-            text.push(Line::from(Span::styled(
-                "  press any key to dismiss",
-                Style::default().fg(Color::DarkGray),
-            )));
-            frame.render_widget(Paragraph::new(text), inner);
-        })?;
-
-        if let Event::Key(_) = event::read()? {
-            return Ok(());
-        }
-    }
 }
 
 /// Draw a centred confirmation dialog; returns `true` on y/Enter, `false` on n/Esc.
