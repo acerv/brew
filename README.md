@@ -52,42 +52,47 @@ Optional files (plain text, loaded from `~/.config/brew/`):
 
 ### List view
 
-| Key                   | Action                  |
-| --------------------- | ----------------------- |
-| `j` / `k`             | Move down / up          |
-| `g`                   | Jump to top             |
-| `G`                   | Jump to bottom          |
-| `PageDown` / `Ctrl+D` | Skip 15 down            |
-| `PageUp` / `Ctrl+U`   | Skip 15 up              |
-| `J` / `K`             | Next / previous mailbox |
-| `Enter`               | Open email              |
-| `r`                   | Reply-all (quoted)      |
-| `R`                   | Reply-all (blank)       |
-| `t`                   | Send thanks reply       |
-| `C`                   | Compose new email       |
-| `N`                   | Show unread only        |
-| `n`                   | Show all emails         |
-| `D`                   | Delete email            |
-| `h` / `l`             | Switch tab left / right |
-| `q` / `Esc`           | Quit                    |
+| Key                   | Action                         |
+| --------------------- | ------------------------------ |
+| `j` / `k`             | Move down / up                 |
+| `g`                   | Jump to top                    |
+| `G`                   | Jump to bottom                 |
+| `PageDown` / `Ctrl+D` | Skip 15 down                   |
+| `PageUp` / `Ctrl+U`   | Skip 15 up                     |
+| `J` / `K`             | Next / previous mailbox        |
+| `Enter`               | Open email                     |
+| `r`                   | Reply-all (quoted)             |
+| `R`                   | Reply-all (blank)              |
+| `t`                   | Send thanks reply              |
+| `C`                   | Compose new email              |
+| `N`                   | Show unread only               |
+| `n`                   | Show all emails                |
+| `A`                   | Mark all emails as read        |
+| `/`                   | Search by subject              |
+| `\`                   | Search by sender               |
+| `F`                   | Reset view (clear all filters) |
+| `f`                   | Force sync mailboxes           |
+| `D`                   | Delete email                   |
+| `h` / `l`             | Switch tab left / right        |
+| `Q`                   | Quit                           |
 
 ### Email view
 
-| Key                   | Action                     |
-| --------------------- | -------------------------- |
-| `j` / `k`             | Scroll down / up one line  |
-| `PageDown` / `Ctrl+D` | Scroll 15 lines down       |
-| `PageUp` / `Ctrl+U`   | Scroll 15 lines up         |
-| `g`                   | Top of body                |
-| `G`                   | Bottom of body             |
-| `J` / `K`             | Next / previous thread     |
-| `r`                   | Reply-all (quoted)         |
-| `R`                   | Reply-all (blank)          |
-| `t`                   | Send thanks reply          |
-| `D`                   | Close tab and delete email |
-| `h` / `l`             | Switch tab left / right    |
-| `Esc`                 | Back to list               |
-| `q`                   | Close tab                  |
+| Key                   | Action                           |
+| --------------------- | -------------------------------- |
+| `j` / `k`             | Scroll down / up one line        |
+| `PageDown` / `Ctrl+D` | Scroll 15 lines down             |
+| `PageUp` / `Ctrl+U`   | Scroll 15 lines up               |
+| `g`                   | Top of body                      |
+| `G`                   | Bottom of body                   |
+| `J` / `K`             | Next / previous email (filtered) |
+| `r`                   | Reply-all (quoted)               |
+| `R`                   | Reply-all (blank)                |
+| `t`                   | Send thanks reply                |
+| `D`                   | Close tab and delete email       |
+| `h` / `l`             | Switch tab left / right          |
+| `Esc`                 | Back to list                     |
+| `q`                   | Close tab                        |
 
 ### Global
 
