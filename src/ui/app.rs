@@ -695,6 +695,33 @@ fn run_loop(
                                 crate::core::sync::spawn_once(cmd.clone(), tx.clone());
                             }
                         }
+                        KeyCode::Char('A') => {
+                            let updates: Vec<(String, PathBuf)> = mailbox_entries[mb]
+                                .iter()
+                                .map(|e| {
+                                    let eff_path = app
+                                        .seen_paths
+                                        .get(&e.thread.data.message_id)
+                                        .cloned()
+                                        .unwrap_or_else(|| e.thread.data.path.clone());
+                                    let new_path = mark_seen(&eff_path);
+                                    (e.thread.data.message_id.clone(), new_path)
+                                })
+                                .collect();
+                            for (id, path) in updates {
+                                app.seen_paths.insert(id, path);
+                            }
+                            filtered_entries[mb] = filter_mailbox(
+                                &mailbox_entries[mb],
+                                app.unread_only[mb],
+                                &app.search_query,
+                                &app.sender_query,
+                                &app.seen_paths,
+                            );
+                            let len = filtered_entries[mb].len();
+                            app.thread_list_states[mb]
+                                .select(if len > 0 { Some(0) } else { None });
+                        }
                         _ => {}
                     }
                 }

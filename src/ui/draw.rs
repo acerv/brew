@@ -100,7 +100,7 @@ pub fn draw(
                 hints += &format!("  [\\{}]", app.sender_query);
             }
             Paragraph::new(format!(
-                " {}/{}{}{} — j/k move  J/K mailbox  Enter open  r reply  R reply-empty  N show-unread  n show-all  / search  \\ sender  f sync  h/l tabs  Q quit",
+                " {}/{}{}{} — j/k move  J/K mailbox  Enter open  r reply  R reply-empty  N show-unread  n show-all  / search  \\ sender  h/l tabs  Q quit",
                 selected,
                 entries.len(),
                 filter_hint,
