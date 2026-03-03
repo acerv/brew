@@ -93,7 +93,7 @@ pub fn draw(
                 String::new()
             };
             Paragraph::new(format!(
-                " {}/{}{}{} — j/k move  J/K mailbox  Enter open  r reply  R reply-empty  t thanks  N unread-only  n all  / search  h/l tabs  q quit",
+                " {}/{}{}{} — j/k move  J/K mailbox  Enter open  r reply  R reply-empty  N show-unread  n show-all  / search  h/l tabs  Q quit",
                 selected,
                 entries.len(),
                 filter_hint,
@@ -109,7 +109,7 @@ pub fn draw(
             Paragraph::new(format!(" sync error: {}", err)).style(Style::default().fg(Color::Red))
         } else {
             Paragraph::new(
-                " j/k scroll  J/K thread  h/l tabs  r reply  R reply-empty  t thanks  Esc back  q close",
+                " j/k scroll  J/K email  h/l tabs  r reply  R reply-empty  Esc back  q close",
             )
             .style(Style::default().fg(Color::DarkGray))
         };

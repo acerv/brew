@@ -576,7 +576,7 @@ fn run_loop(
                     // ── list view ──
                     let entries = &filtered_entries[mb];
                     match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc => break,
+                        KeyCode::Char('Q') => break,
                         KeyCode::Char('/') => {
                             app.search_active = true;
                             app.search_query.clear();
