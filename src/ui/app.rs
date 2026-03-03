@@ -695,6 +695,21 @@ fn run_loop(
                                 crate::core::sync::spawn_once(cmd.clone(), tx.clone());
                             }
                         }
+                        KeyCode::Char('F') => {
+                            app.search_query.clear();
+                            app.sender_query.clear();
+                            app.search_active = false;
+                            app.unread_only[mb] = false;
+                            filtered_entries[mb] = filter_mailbox(
+                                &mailbox_entries[mb],
+                                false,
+                                "",
+                                "",
+                                &app.seen_paths,
+                            );
+                            let len = filtered_entries[mb].len();
+                            app.thread_list_states[mb].select(if len > 0 { Some(0) } else { None });
+                        }
                         KeyCode::Char('A') => {
                             let updates: Vec<(String, PathBuf)> = mailbox_entries[mb]
                                 .iter()
@@ -719,8 +734,7 @@ fn run_loop(
                                 &app.seen_paths,
                             );
                             let len = filtered_entries[mb].len();
-                            app.thread_list_states[mb]
-                                .select(if len > 0 { Some(0) } else { None });
+                            app.thread_list_states[mb].select(if len > 0 { Some(0) } else { None });
                         }
                         _ => {}
                     }
