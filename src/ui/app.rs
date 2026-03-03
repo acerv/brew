@@ -716,15 +716,15 @@ fn run_loop(
                         }
                     }
                     KeyCode::Char('J') => {
-                        app.thread_down(&mailbox_entries);
-                        let entries = &mailbox_entries[app.selected_mailbox];
+                        app.thread_down(&filtered_entries);
+                        let entries = &filtered_entries[app.selected_mailbox];
                         if let Some(new_tab) = app.resolve_selected(entries) {
                             app.emails[ei] = new_tab;
                         }
                     }
                     KeyCode::Char('K') => {
                         app.thread_up();
-                        let entries = &mailbox_entries[app.selected_mailbox];
+                        let entries = &filtered_entries[app.selected_mailbox];
                         if let Some(new_tab) = app.resolve_selected(entries) {
                             app.emails[ei] = new_tab;
                         }
