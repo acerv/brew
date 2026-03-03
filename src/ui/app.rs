@@ -334,6 +334,10 @@ pub fn run(mailbox_cfgs: &[&Mailbox], smtp: &Smtp, sync_cfg: Option<&Sync>) -> R
     // Dropping `shutdown_tx` (at the end of this function) signals the thread
     // to stop after its current sleep interval.
     let (sync_tx, sync_rx) = mpsc::channel::<Option<String>>();
+    // Clone the sender before it is moved into the background thread so that
+    // the 'f' key can trigger a one-shot sync at any time.
+    let force_sync: Option<(String, mpsc::Sender<Option<String>>)> =
+        sync_cfg.map(|s| (s.command.clone(), sync_tx.clone()));
     let _shutdown_tx = sync_cfg.map(|s| {
         let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
         crate::core::sync::spawn(s.command.clone(), s.interval, sync_tx, shutdown_rx);
@@ -355,6 +359,7 @@ pub fn run(mailbox_cfgs: &[&Mailbox], smtp: &Smtp, sync_cfg: Option<&Sync>) -> R
         smtp,
         rx,
         sync_rx,
+        force_sync,
     );
 
     drop(watcher);
@@ -375,6 +380,7 @@ fn run_loop(
     smtp: &Smtp,
     fs_events: mpsc::Receiver<notify::Event>,
     sync_rx: mpsc::Receiver<Option<String>>,
+    force_sync: Option<(String, mpsc::Sender<Option<String>>)>,
 ) -> Result<()> {
     let labels: Vec<&str> = mailbox_cfgs.iter().map(|mb| mb.label.as_str()).collect();
 
@@ -683,6 +689,11 @@ fn run_loop(
                         }
                         KeyCode::Char('C') => {
                             let _ = compose_new(signature, smtp, terminal);
+                        }
+                        KeyCode::Char('f') => {
+                            if let Some((cmd, tx)) = &force_sync {
+                                crate::core::sync::spawn_once(cmd.clone(), tx.clone());
+                            }
                         }
                         _ => {}
                     }
