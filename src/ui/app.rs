@@ -5,7 +5,7 @@ use crate::core::config::{self, Config, Smtp};
 use crate::core::maildir::Maildir;
 use crate::core::thread::Email;
 use crate::ui::compose::{self, EmailReply};
-use crate::ui::editor::Editor;
+use crate::ui::editor::{self, Editor};
 use crate::ui::email::{self, EmailView};
 use crate::ui::threads::{self, ThreadsView};
 use crate::ui::utils;
@@ -15,6 +15,7 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
+use edtui::EditorMode;
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
@@ -35,13 +36,18 @@ enum SearchMode {
     Applied,
 }
 
+enum Tab {
+    Email(EmailView),
+    Compose(Editor),
+}
+
 pub struct App {
     config: Config,
     sidebar_state: ListState,
     maildirs: Vec<Maildir>,
     threads: Vec<ThreadsView>,
-    /// Open email tabs. Tab 0 is always the "Brew" main view; email tabs start at index 1.
-    tabs: Vec<EmailView>,
+    /// Open tabs. Tab 0 is always the "Brew" main view; tabs start at index 1.
+    tabs: Vec<Tab>,
     current_tab: usize,
     current_mb: usize,
     pending_sync: Option<mpsc::Receiver<Option<String>>>,
@@ -241,6 +247,44 @@ impl App {
 
     fn handle_tab_key(&mut self, key: KeyEvent) -> bool {
         let ei = self.current_tab.saturating_sub(1);
+        if ei >= self.tabs.len() {
+            return true;
+        }
+        match self.tabs[ei] {
+            Tab::Email(_) => self.handle_email_tab_key(key, ei),
+            Tab::Compose(_) => self.handle_compose_tab_key(key, ei),
+        }
+        true
+    }
+
+    fn handle_compose_tab_key(&mut self, key: KeyEvent, ei: usize) {
+        let should_close = if let Tab::Compose(ref mut ed) = self.tabs[ei] {
+            if matches!(key.code, KeyCode::Char('q')) && matches!(ed.mode(), EditorMode::Normal) {
+                true
+            } else {
+                ed.on_key(key);
+                false
+            }
+        } else {
+            false
+        };
+        if should_close {
+            // Extract text before closing the tab.
+            let text = if let Tab::Compose(ref ed) = self.tabs[ei] {
+                ed.text()
+            } else {
+                String::new()
+            };
+            self.close_current_tab();
+            if let Some(ref mut terminal) = self.terminal {
+                if let Err(e) = confirm_and_send(terminal, &text, &self.config.smtp) {
+                    self.status_error = Some(e.to_string());
+                }
+            }
+        }
+    }
+
+    fn handle_email_tab_key(&mut self, key: KeyEvent, ei: usize) {
         match (key.modifiers, key.code) {
             (_, KeyCode::Char('q')) => self.close_current_tab(),
             (_, KeyCode::Char('J')) => {
@@ -256,32 +300,32 @@ impl App {
                 self.open_selected_email();
             }
             (_, KeyCode::Char('j') | KeyCode::Down) => {
-                if let Some(ev) = self.tabs.get_mut(ei) {
+                if let Some(Tab::Email(ev)) = self.tabs.get_mut(ei) {
                     ev.scroll_down(1);
                 }
             }
             (KeyModifiers::CONTROL, KeyCode::Char('d')) | (_, KeyCode::PageDown) => {
-                if let Some(ev) = self.tabs.get_mut(ei) {
+                if let Some(Tab::Email(ev)) = self.tabs.get_mut(ei) {
                     ev.scroll_down(15);
                 }
             }
             (_, KeyCode::Char('k') | KeyCode::Up) => {
-                if let Some(ev) = self.tabs.get_mut(ei) {
+                if let Some(Tab::Email(ev)) = self.tabs.get_mut(ei) {
                     ev.scroll_up(1);
                 }
             }
             (KeyModifiers::CONTROL, KeyCode::Char('u')) | (_, KeyCode::PageUp) => {
-                if let Some(ev) = self.tabs.get_mut(ei) {
+                if let Some(Tab::Email(ev)) = self.tabs.get_mut(ei) {
                     ev.scroll_up(15);
                 }
             }
             (_, KeyCode::Char('g')) => {
-                if let Some(ev) = self.tabs.get_mut(ei) {
+                if let Some(Tab::Email(ev)) = self.tabs.get_mut(ei) {
                     ev.first_line();
                 }
             }
             (_, KeyCode::Char('G')) => {
-                if let Some(ev) = self.tabs.get_mut(ei) {
+                if let Some(Tab::Email(ev)) = self.tabs.get_mut(ei) {
                     ev.last_line();
                 }
             }
@@ -290,7 +334,6 @@ impl App {
             (_, KeyCode::Char('R')) => self.open_reply_from_tab(true),
             _ => {}
         }
-        true
     }
 
     fn reset_search(&mut self) {
@@ -367,7 +410,9 @@ impl App {
 
     fn delete_current_tab_email(&mut self) {
         let ei = self.current_tab.saturating_sub(1);
-        let Some(ev) = self.tabs.get(ei) else { return };
+        let Some(Tab::Email(ev)) = self.tabs.get(ei) else {
+            return;
+        };
         let id = ev.message_id().to_string();
         for (maildir, tv) in self.maildirs.iter_mut().zip(self.threads.iter_mut()) {
             maildir.remove_by_id(&id);
@@ -427,13 +472,13 @@ impl App {
             if let Some(i) = self
                 .tabs
                 .iter()
-                .position(|t| t.message_id() == email.message_id)
+                .position(|t| matches!(t, Tab::Email(ev) if ev.message_id() == email.message_id))
             {
                 self.current_tab = i + 1;
                 return;
             }
             if let Ok(ev) = EmailView::new(email) {
-                self.tabs.push(ev);
+                self.tabs.push(Tab::Email(ev));
                 self.current_tab = self.tabs.len();
             }
         } else {
@@ -441,7 +486,7 @@ impl App {
             let ei = self.current_tab.saturating_sub(1);
             if let Ok(ev) = EmailView::new(email) {
                 if let Some(slot) = self.tabs.get_mut(ei) {
-                    *slot = ev;
+                    *slot = Tab::Email(ev);
                 }
             }
         }
@@ -478,7 +523,9 @@ impl App {
 
     fn open_reply_from_tab(&mut self, quote: bool) {
         let ei = self.current_tab.saturating_sub(1);
-        let Some(ev) = self.tabs.get(ei) else { return };
+        let Some(Tab::Email(ev)) = self.tabs.get(ei) else {
+            return;
+        };
         let path = ev.path().to_path_buf();
         match Email::from_file(&path) {
             Ok(email) => match email.reply_draft(quote) {
@@ -490,19 +537,8 @@ impl App {
     }
 
     fn open_editor(&mut self, draft: String) {
-        if let Some(mut terminal) = self.terminal.take() {
-            let mut editor = Editor::new(draft).with_cursor(5);
-            match editor.open(&mut terminal) {
-                Ok(()) => {
-                    let edited = editor.into_data();
-                    if let Err(e) = confirm_and_send(&mut terminal, &edited, &self.config.smtp) {
-                        self.status_error = Some(e.to_string());
-                    }
-                }
-                Err(e) => self.status_error = Some(e.to_string()),
-            }
-            self.terminal = Some(terminal);
-        }
+        self.tabs.push(Tab::Compose(Editor::new(&draft)));
+        self.current_tab = self.tabs.len();
     }
 
     fn next_tab(&mut self) {
@@ -538,11 +574,17 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
         .split(area);
 
     let titles: Vec<String> = std::iter::once("Brew".to_string())
-        .chain(
-            app.tabs
-                .iter()
-                .map(|ev| utils::truncate_string(&ev.subject(), 20)),
-        )
+        .chain(app.tabs.iter().map(|tab| match tab {
+            Tab::Email(ev) => utils::truncate_string(&ev.subject(), 20),
+            Tab::Compose(ed) => {
+                let t = ed.title();
+                if t.is_empty() {
+                    "Compose".to_string()
+                } else {
+                    utils::truncate_string(t, 20)
+                }
+            }
+        }))
         .map(|s| format!(" {s} "))
         .collect();
 
@@ -558,8 +600,11 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
 
     if app.current_tab == 0 {
         draw_main(frame, chunks[1], app);
-    } else if let Some(ev) = app.tabs.get_mut(app.current_tab.saturating_sub(1)) {
-        email::draw(frame, chunks[1], ev);
+    } else if let Some(tab) = app.tabs.get_mut(app.current_tab.saturating_sub(1)) {
+        match tab {
+            Tab::Email(ev) => email::draw(frame, chunks[1], ev),
+            Tab::Compose(ed) => editor::draw(frame, chunks[1], ed),
+        }
     }
 
     draw_statusbar(frame, chunks[2], app);
@@ -858,7 +903,7 @@ mod tests {
     }
 
     fn push_tab(app: &mut App, subject: &str) {
-        app.tabs.push(EmailView::new_stub(subject));
+        app.tabs.push(Tab::Email(EmailView::new_stub(subject)));
         app.current_tab = app.tabs.len();
     }
 

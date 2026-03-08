@@ -1,71 +1,106 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@suse.com>
-use anyhow::Result;
-use crossterm::{
-    execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+use edtui::{
+    EditorEventHandler, EditorMode, EditorState, EditorStatusLine, EditorTheme, EditorView,
+    Highlight, Index2, Lines, RowIndex,
 };
-use ratatui::{Terminal, backend::CrosstermBackend};
-use std::io::{self, Write};
-use std::process::Command;
+use ratatui::{
+    layout::Rect,
+    style::{Color, Modifier, Style},
+    widgets::{Block, Borders},
+};
 
-/// Holds a text buffer that can be opened in the default system editor.
-/// The TUI is suspended while the editor runs and resumed on exit.
+/// Built-in vim-style editor powered by edtui.
 pub struct Editor {
-    data: String,
-    cursor_line: usize,
+    state: EditorState,
+    handler: EditorEventHandler,
+    title: String,
 }
 
 impl Editor {
-    pub fn new(data: String) -> Self {
+    /// Create a new editor with the given text content.
+    pub fn new(content: &str) -> Self {
+        let title = content
+            .lines()
+            .find_map(|l| l.strip_prefix("Subject:"))
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
         Self {
-            data,
-            cursor_line: 0,
+            state: EditorState::new(Lines::from(content)),
+            handler: EditorEventHandler::default(),
+            title,
         }
     }
 
-    /// Position the cursor at the given line number when opening the editor.
-    pub fn with_cursor(mut self, line: usize) -> Self {
-        self.cursor_line = line;
-        self
+    pub fn title(&self) -> &str {
+        &self.title
     }
 
-    /// Open the default system editor (`$VISUAL` → `$EDITOR` → `vim`) on the
-    /// current buffer. The TUI is suspended while the editor runs and resumed
-    /// afterwards. `self.data` is replaced with the edited content.
-    pub fn open(&mut self, terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
-        let tmp_path = std::env::temp_dir().join(format!("brew_reply_{}.eml", std::process::id()));
-        {
-            let mut f = std::fs::File::create(&tmp_path)?;
-            f.write_all(self.data.as_bytes())?;
+    /// Handle a crossterm key event.
+    pub fn on_key(&mut self, key: crossterm::event::KeyEvent) {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+            self.state.mode = EditorMode::Normal;
+            return;
         }
+        self.handler.on_key_event(key, &mut self.state);
+    }
 
-        disable_raw_mode()?;
-        execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    /// Return the current editor mode (Normal, Insert, Visual).
+    pub fn mode(&self) -> &EditorMode {
+        &self.state.mode
+    }
 
-        let editor_cmd = std::env::var("VISUAL")
-            .or_else(|_| std::env::var("EDITOR"))
-            .unwrap_or_else(|_| "vim".to_string());
+    /// Return the full text content as a string.
+    pub fn text(&self) -> String {
+        self.state.lines.to_string()
+    }
+}
 
-        let mut cmd = Command::new(&editor_cmd);
-        if self.cursor_line > 0 {
-            cmd.arg(format!("+{}", self.cursor_line));
+/// Render the editor into `area`.
+pub fn draw(frame: &mut ratatui::Frame, area: Rect, editor: &mut Editor) {
+    // Highlight quoted lines ('>' prefix) in blue.
+    let quote_style = Style::default().fg(Color::Blue);
+    let mut highlights = Vec::new();
+    for row in 0..editor.state.lines.len() {
+        let Some(line) = editor.state.lines.get(RowIndex::new(row)) else {
+            continue;
+        };
+        let first = line.iter().copied().find(|c| *c != ' ');
+        if first == Some('>') && !line.is_empty() {
+            highlights.push(Highlight::new(
+                Index2::new(row, 0),
+                Index2::new(row, line.len().saturating_sub(1)),
+                quote_style,
+            ));
         }
-        cmd.arg(&tmp_path).status()?;
-
-        let edited = std::fs::read_to_string(&tmp_path)?;
-        let _ = std::fs::remove_file(&tmp_path);
-
-        enable_raw_mode()?;
-        execute!(terminal.backend_mut(), EnterAlternateScreen)?;
-        terminal.clear()?;
-
-        self.data = edited;
-        Ok(())
     }
+    editor.state.set_highlights(highlights);
 
-    /// Consume the editor and return ownership of the buffer.
-    pub fn into_data(self) -> String {
-        self.data
-    }
+    let mode_style = match editor.state.mode {
+        EditorMode::Normal => Style::default().bg(Color::Blue).fg(Color::Black),
+        EditorMode::Insert => Style::default().bg(Color::Green).fg(Color::Black),
+        EditorMode::Visual => Style::default().bg(Color::Magenta).fg(Color::Black),
+        _ => Style::default(),
+    };
+
+    let status_line = EditorStatusLine::default()
+        .style_mode(mode_style.add_modifier(Modifier::BOLD))
+        .style_line(Style::default().fg(Color::DarkGray));
+
+    let theme = EditorTheme::default()
+        .base(Style::default().bg(Color::Reset).fg(Color::Reset))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Compose ")
+                .title_style(Style::default().add_modifier(Modifier::BOLD)),
+        )
+        .cursor_style(Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD))
+        .selection_style(Style::default().add_modifier(Modifier::REVERSED))
+        .line_numbers_style(Style::default().fg(Color::DarkGray))
+        .status_line(status_line);
+
+    let view = EditorView::new(&mut editor.state).theme(theme).wrap(true);
+    frame.render_widget(view, area);
 }
