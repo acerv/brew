@@ -78,6 +78,70 @@ impl std::str::FromStr for Address {
     }
 }
 
+/// A persistent address book stored as a plain text file.
+pub struct AddressBook {
+    entries: Vec<Address>,
+    path: std::path::PathBuf,
+}
+
+impl AddressBook {
+    /// Load the address book from `~/.config/brew/addresses`.
+    /// Returns an empty book if the file doesn't exist.
+    pub fn load() -> Self {
+        let path = crate::core::config::config_dir().join("addresses");
+        let entries = std::fs::read_to_string(&path)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .filter_map(|l| l.parse::<Address>().ok())
+            .filter(|a| !a.full().is_empty())
+            .collect();
+        Self { entries, path }
+    }
+
+    /// Add addresses that aren't already in the book and save.
+    pub fn harvest(&mut self, addrs: &[Address]) {
+        let mut changed = false;
+        for addr in addrs {
+            if addr.full().is_empty() {
+                continue;
+            }
+            if !self.entries.iter().any(|e| e.full() == addr.full()) {
+                self.entries.push(addr.clone());
+                changed = true;
+            }
+        }
+        if changed {
+            self.save();
+        }
+    }
+
+    /// Fuzzy search: match addresses where name or email contains the query
+    /// (case-insensitive).
+    pub fn search(&self, query: &str) -> Vec<&Address> {
+        if query.is_empty() {
+            return Vec::new();
+        }
+        let q = query.to_lowercase();
+        self.entries
+            .iter()
+            .filter(|a| a.full().to_lowercase().contains(&q))
+            .collect()
+    }
+
+    fn save(&self) {
+        if let Some(parent) = self.path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let content: String = self
+            .entries
+            .iter()
+            .map(|a| format!("{}\n", a.full()))
+            .collect();
+        let _ = std::fs::write(&self.path, content);
+    }
+}
+
 /// Split a comma-separated address list into individual `Address` values,
 /// respecting angle brackets so that `"Doe, John <j@x.com>, alice@x.com"`
 /// splits into two entries rather than three.
@@ -261,5 +325,83 @@ mod tests {
     fn split_whitespace_only() {
         let addrs = split_addresses("   ");
         assert!(addrs.is_empty());
+    }
+
+    // ── AddressBook ─────────────────────────────────────────────────────────
+
+    fn temp_book(content: &str) -> AddressBook {
+        let dir = std::env::temp_dir().join(format!(
+            "brew_ab_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("addresses");
+        if !content.is_empty() {
+            std::fs::write(&path, content).unwrap();
+        }
+        AddressBook {
+            entries: content
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .filter_map(|l| l.parse::<Address>().ok())
+                .filter(|a| !a.full().is_empty())
+                .collect(),
+            path,
+        }
+    }
+
+    #[test]
+    fn search_matches_name() {
+        let book = temp_book("Alice <alice@x.com>\nBob <bob@x.com>\n");
+        let results = book.search("ali");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].short(), "Alice");
+    }
+
+    #[test]
+    fn search_matches_email() {
+        let book = temp_book("Alice <alice@x.com>\nBob <bob@y.com>\n");
+        let results = book.search("y.com");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].short(), "Bob");
+    }
+
+    #[test]
+    fn search_is_case_insensitive() {
+        let book = temp_book("Alice <alice@x.com>\n");
+        assert_eq!(book.search("ALICE").len(), 1);
+    }
+
+    #[test]
+    fn search_empty_query_returns_nothing() {
+        let book = temp_book("Alice <alice@x.com>\n");
+        assert!(book.search("").is_empty());
+    }
+
+    #[test]
+    fn harvest_adds_new_addresses() {
+        let mut book = temp_book("");
+        book.harvest(&[Address::new("Alice", "alice@x.com")]);
+        assert_eq!(book.entries.len(), 1);
+        let saved = std::fs::read_to_string(&book.path).unwrap();
+        assert!(saved.contains("alice@x.com"));
+    }
+
+    #[test]
+    fn harvest_skips_duplicates() {
+        let mut book = temp_book("Alice <alice@x.com>\n");
+        book.harvest(&[Address::new("Alice", "alice@x.com")]);
+        assert_eq!(book.entries.len(), 1);
+    }
+
+    #[test]
+    fn harvest_skips_empty() {
+        let mut book = temp_book("");
+        book.harvest(&[Address::default()]);
+        assert!(book.entries.is_empty());
     }
 }

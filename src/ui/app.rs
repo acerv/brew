@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@suse.com>
-use crate::core::address::Address;
+use crate::core::address::{Address, AddressBook};
 use crate::core::config::{self, Config, Smtp};
 use crate::core::maildir::Maildir;
 use crate::core::thread::Email;
@@ -54,6 +54,7 @@ pub struct App {
     search: SearchMode,
     status_error: Option<String>,
     terminal: Option<Terminal<CrosstermBackend<io::Stdout>>>,
+    address_book: AddressBook,
 }
 
 impl App {
@@ -67,6 +68,15 @@ impl App {
             maildirs.push(maildir);
             threads.push(tv);
         }
+
+        let mut address_book = AddressBook::load();
+        let mut addrs = Vec::new();
+        for md in &maildirs {
+            for thread in md.threads().borrow().iter() {
+                addrs.push(thread.parent.from.clone());
+            }
+        }
+        address_book.harvest(&addrs);
 
         enable_raw_mode()?;
         let mut stdout = io::stdout();
@@ -91,6 +101,7 @@ impl App {
             search: SearchMode::Off,
             status_error: None,
             terminal: Some(terminal),
+            address_book,
         })
     }
 
@@ -259,17 +270,17 @@ impl App {
 
     fn handle_compose_tab_key(&mut self, key: KeyEvent, ei: usize) {
         let should_close = if let Tab::Compose(ref mut ed) = self.tabs[ei] {
-            if matches!(key.code, KeyCode::Char('q')) && matches!(ed.mode(), EditorMode::Normal) {
+            if matches!(key.code, KeyCode::Char('q')) && ed.mode() == EditorMode::Normal {
                 true
             } else {
                 ed.on_key(key);
+                ed.update_autocomplete(&self.address_book);
                 false
             }
         } else {
             false
         };
         if should_close {
-            // Extract text before closing the tab.
             let text = if let Tab::Compose(ref ed) = self.tabs[ei] {
                 ed.text()
             } else {
@@ -277,8 +288,15 @@ impl App {
             };
             self.close_current_tab();
             if let Some(ref mut terminal) = self.terminal {
-                if let Err(e) = confirm_and_send(terminal, &text, &self.config.smtp) {
-                    self.status_error = Some(e.to_string());
+                match confirm_and_send(terminal, &text, &self.config.smtp) {
+                    Ok(true) => {
+                        let draft = compose::parse_draft(&text);
+                        let mut addrs = draft.to;
+                        addrs.extend(draft.cc);
+                        self.address_book.harvest(&addrs);
+                    }
+                    Err(e) => self.status_error = Some(e.to_string()),
+                    _ => {}
                 }
             }
         }
@@ -703,15 +721,15 @@ fn confirm_and_send(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     edited: &str,
     smtp: &Smtp,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     if !confirm_send(terminal)? {
-        return Ok(());
+        return Ok(false);
     }
 
     let draft = compose::parse_draft(edited);
 
     if draft.to.is_empty() {
-        return Ok(());
+        return Ok(false);
     }
 
     send_message(
@@ -721,7 +739,9 @@ fn confirm_and_send(
         &draft.subject,
         &draft.body,
         draft.in_reply_to.as_deref(),
-    )
+    )?;
+
+    Ok(true)
 }
 
 fn confirm_send(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> anyhow::Result<bool> {
@@ -881,6 +901,7 @@ mod tests {
             search: SearchMode::Off,
             status_error: None,
             terminal: None,
+            address_book: AddressBook::load(),
         }
     }
 
