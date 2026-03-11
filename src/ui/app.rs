@@ -10,6 +10,7 @@ use crate::ui::email::{self, EmailView};
 use crate::ui::threads::{self, ThreadsView};
 use crate::ui::utils;
 use anyhow::anyhow;
+use arboard::Clipboard;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     execute,
@@ -37,7 +38,7 @@ enum SearchMode {
 }
 
 enum Tab {
-    Email(EmailView),
+    Email(Box<EmailView>),
     Compose(Box<Editor>),
 }
 
@@ -55,12 +56,14 @@ pub struct App {
     status_error: Option<String>,
     terminal: Option<Terminal<CrosstermBackend<io::Stdout>>>,
     address_book: AddressBook,
+    clipboard: Clipboard,
 }
 
 impl App {
     pub fn new(config: Config) -> anyhow::Result<Self> {
         let mut maildirs = Vec::new();
         let mut threads = Vec::new();
+        let clipboard = Clipboard::new()?;
 
         for mb in &config.mailboxes {
             let maildir = Maildir::new(&mb.path).unwrap_or_default();
@@ -102,6 +105,7 @@ impl App {
             status_error: None,
             terminal: Some(terminal),
             address_book,
+            clipboard,
         })
     }
 
@@ -350,6 +354,14 @@ impl App {
             (_, KeyCode::Char('D')) => self.delete_current_tab_email(),
             (_, KeyCode::Char('r')) => self.open_reply_from_tab(false),
             (_, KeyCode::Char('R')) => self.open_reply_from_tab(true),
+            (_, KeyCode::Char('Y')) => {
+                if let Some(Tab::Email(ev)) = self.tabs.get_mut(ei) {
+                    let raw = ev.raw_body();
+                    if let Err(e) = self.clipboard.set_text(raw) {
+                        self.status_error = Some(e.to_string());
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -496,7 +508,7 @@ impl App {
                 return;
             }
             if let Ok(ev) = EmailView::new(email) {
-                self.tabs.push(Tab::Email(ev));
+                self.tabs.push(Tab::Email(Box::new(ev)));
                 self.current_tab = self.tabs.len();
             }
         } else {
@@ -505,7 +517,7 @@ impl App {
             if let Ok(ev) = EmailView::new(email)
                 && let Some(slot) = self.tabs.get_mut(ei)
             {
-                *slot = Tab::Email(ev);
+                *slot = Tab::Email(Box::new(ev));
             }
         }
     }
@@ -889,6 +901,7 @@ mod tests {
         if !cfg.mailboxes.is_empty() {
             sidebar_state.select(Some(0));
         }
+        let clipboard = Clipboard::new();
         App {
             sidebar_state,
             config: cfg,
@@ -902,6 +915,7 @@ mod tests {
             status_error: None,
             terminal: None,
             address_book: AddressBook::load(),
+            clipboard: clipboard.unwrap(),
         }
     }
 
@@ -924,7 +938,8 @@ mod tests {
     }
 
     fn push_tab(app: &mut App, subject: &str) {
-        app.tabs.push(Tab::Email(EmailView::new_stub(subject)));
+        app.tabs
+            .push(Tab::Email(Box::new(EmailView::new_stub(subject))));
         app.current_tab = app.tabs.len();
     }
 

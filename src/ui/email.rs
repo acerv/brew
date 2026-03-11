@@ -23,6 +23,7 @@ pub struct EmailView {
     date: String,
     body_lines: Vec<Line<'static>>,
     scroll: u16,
+    raw_body: String,
 }
 
 impl EmailView {
@@ -67,6 +68,7 @@ impl EmailView {
             date,
             body_lines,
             scroll: 0,
+            raw_body,
         })
     }
 
@@ -99,6 +101,10 @@ impl EmailView {
 
     pub fn message_id(&self) -> &str {
         &self.message_id
+    }
+
+    pub fn raw_body(&self) -> &str {
+        &self.raw_body
     }
 }
 
@@ -277,6 +283,7 @@ impl EmailView {
             date: String::new(),
             body_lines: Vec::new(),
             scroll: 0,
+            raw_body: String::new(),
         }
     }
 }

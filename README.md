@@ -45,39 +45,40 @@ interval = 60
 
 Optional files (plain text, loaded from `~/.config/brew/`):
 
-| File        | Purpose                       |
-| ----------- | ----------------------------- |
-| `signature` | Appended to every draft       |
+| File        | Purpose                 |
+| ----------- | ----------------------- |
+| `signature` | Appended to every draft |
 
 ## Key bindings
 
 ### Thread list
 
-| Key                   | Action                      |
-| --------------------- | --------------------------- |
-| `j` / `k` / `↑` / `↓`| Move down / up             |
-| `g`                   | Jump to first email         |
-| `G`                   | Jump to last email          |
-| `J` / `K`             | Next / previous mailbox     |
-| `Enter`               | Open email in a new tab     |
-| `r`                   | Reply (empty body)          |
-| `R`                   | Reply (quoted)              |
-| `C`                   | Compose new email           |
-| `v`                   | Toggle read / unread        |
-| `N`                   | Toggle unread-only filter   |
-| `/`                   | Search by subject (live)    |
-| `Esc`                 | Clear search filter         |
-| `f`                   | Force sync mailboxes        |
-| `D`                   | Delete email                |
-| `Q`                   | Quit                        |
+| Key                   | Action                    |
+| --------------------- | ------------------------- |
+| `j` / `k` / `↑` / `↓` | Move down / up            |
+| `g`                   | Jump to first email       |
+| `G`                   | Jump to last email        |
+| `J` / `K`             | Next / previous mailbox   |
+| `Enter`               | Open email in a new tab   |
+| `r`                   | Reply (empty body)        |
+| `R`                   | Reply (quoted)            |
+| `C`                   | Compose new email         |
+| `v`                   | Toggle read / unread      |
+| `N`                   | Toggle unread-only filter |
+| `/`                   | Search by subject (live)  |
+| `Esc`                 | Clear search filter       |
+| `f`                   | Force sync mailboxes      |
+| `D`                   | Delete email              |
+| `Q`                   | Quit                      |
 
 ### Email tab
 
 | Key                   | Action                           |
 | --------------------- | -------------------------------- |
-| `j` / `k` / `↑` / `↓`| Scroll down / up one line       |
-| `Ctrl+D` / `PageDown` | Scroll 15 lines down            |
-| `Ctrl+U` / `PageUp`   | Scroll 15 lines up              |
+| `j` / `k` / `↑` / `↓` | Scroll down / up one line        |
+| `Ctrl+D` / `PageDown` | Scroll 15 lines down             |
+| `Ctrl+U` / `PageUp`   | Scroll 15 lines up               |
+| `Y`                   | Copy email body in the clipboard |
 | `g`                   | Top of body                      |
 | `G`                   | Bottom of body                   |
 | `J` / `K`             | Next / previous email            |
