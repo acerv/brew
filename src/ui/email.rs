@@ -136,7 +136,7 @@ pub fn draw(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, view: &mut 
 
     let header = Paragraph::new(header_text).block(Block::default().borders(Borders::ALL).title(
         Span::styled(
-            format!(" {} ", utils::truncate_string(&view.subject(), 60)),
+            format!(" {} ", utils::truncate_string(view.subject(), 60)),
             Style::default().add_modifier(Modifier::BOLD),
         ),
     ));

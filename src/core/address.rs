@@ -65,12 +65,12 @@ impl std::str::FromStr for Address {
             return Ok(Self::default());
         }
 
-        if let Some(start) = s.find('<') {
-            if let Some(end) = s[start..].find('>') {
-                let addr = s[start + 1..start + end].trim();
-                let name = s[..start].trim();
-                return Ok(Self::new(name, addr));
-            }
+        if let Some(start) = s.find('<')
+            && let Some(end) = s[start..].find('>')
+        {
+            let addr = s[start + 1..start + end].trim();
+            let name = s[..start].trim();
+            return Ok(Self::new(name, addr));
         }
 
         // Bare address (no angle brackets)

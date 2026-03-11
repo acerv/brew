@@ -64,22 +64,12 @@ use std::rc::Rc;
 /// the Maildir folder. By using `Rc` reference counter, we ensure that messages
 /// are stored only once and the memory consumption will be proportional to the
 /// amount of emails which have been loaded.
+#[derive(Default)]
 pub struct Maildir {
     dir: String,
     searching: HashMap<String, Vec<Rc<EmailThread>>>,
     lookup: HashMap<String, Rc<EmailThread>>,
     threads: EmailThreadList,
-}
-
-impl Default for Maildir {
-    fn default() -> Self {
-        Self {
-            dir: String::new(),
-            searching: HashMap::new(),
-            lookup: HashMap::new(),
-            threads: EmailThreadList::default(),
-        }
-    }
 }
 
 impl Maildir {
@@ -238,7 +228,7 @@ impl Maildir {
         let mut threads = self.threads.borrow_mut();
 
         // Orphaned emails (parent never found) become root threads.
-        for (_, orphans) in &self.searching {
+        for orphans in self.searching.values() {
             threads.extend(orphans.clone());
         }
         self.searching.clear();

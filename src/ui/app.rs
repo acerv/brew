@@ -38,7 +38,7 @@ enum SearchMode {
 
 enum Tab {
     Email(EmailView),
-    Compose(Editor),
+    Compose(Box<Editor>),
 }
 
 pub struct App {
@@ -148,10 +148,10 @@ impl App {
                     }
                 }
             } else {
-                if let Some(i) = interval {
-                    if last_sync.elapsed() >= i {
-                        self.trigger_sync();
-                    }
+                if let Some(i) = interval
+                    && last_sync.elapsed() >= i
+                {
+                    self.trigger_sync();
                 }
             }
 
@@ -159,14 +159,14 @@ impl App {
             terminal.draw(|frame| draw(frame, self))?;
             self.terminal = Some(terminal);
 
-            if event::poll(Duration::from_secs(POLLING_TIME))? {
-                if let Event::Key(key) = event::read()? {
-                    if key.kind != event::KeyEventKind::Press {
-                        continue;
-                    }
-                    if !self.handle_key(key) {
-                        break;
-                    }
+            if event::poll(Duration::from_secs(POLLING_TIME))?
+                && let Event::Key(key) = event::read()?
+            {
+                if key.kind != event::KeyEventKind::Press {
+                    continue;
+                }
+                if !self.handle_key(key) {
+                    break;
                 }
             }
         }
@@ -502,10 +502,10 @@ impl App {
         } else {
             // Email tab: replace the current tab in place.
             let ei = self.current_tab.saturating_sub(1);
-            if let Ok(ev) = EmailView::new(email) {
-                if let Some(slot) = self.tabs.get_mut(ei) {
-                    *slot = Tab::Email(ev);
-                }
+            if let Ok(ev) = EmailView::new(email)
+                && let Some(slot) = self.tabs.get_mut(ei)
+            {
+                *slot = Tab::Email(ev);
             }
         }
     }
@@ -555,7 +555,7 @@ impl App {
     }
 
     fn open_editor(&mut self, draft: String) {
-        self.tabs.push(Tab::Compose(Editor::new(&draft)));
+        self.tabs.push(Tab::Compose(Box::new(Editor::new(&draft))));
         self.current_tab = self.tabs.len();
     }
 
@@ -593,7 +593,7 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
 
     let titles: Vec<String> = std::iter::once("Brew".to_string())
         .chain(app.tabs.iter().map(|tab| match tab {
-            Tab::Email(ev) => utils::truncate_string(&ev.subject(), 20),
+            Tab::Email(ev) => utils::truncate_string(ev.subject(), 20),
             Tab::Compose(ed) => {
                 let t = ed.title();
                 if t.is_empty() {

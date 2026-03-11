@@ -168,7 +168,7 @@ impl Editor {
     /// Return the current editor mode. For header fields, always "Insert".
     pub fn mode(&self) -> EditorMode {
         if self.focus == Focus::Body {
-            self.body_state.mode.clone()
+            self.body_state.mode
         } else {
             EditorMode::Insert
         }

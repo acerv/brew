@@ -59,9 +59,9 @@ impl Email {
 
         Ok(Self {
             message_id: id.clone(),
-            reply_to: reply_to,
+            reply_to,
             from,
-            subject: subject,
+            subject,
             timestamp,
             path: RefCell::new(path.to_path_buf()),
         })
