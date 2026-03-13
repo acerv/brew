@@ -36,6 +36,13 @@ path  = "/home/you/Mail/INBOX/"
 label = "Work"
 path  = "/home/you/Mail/Work/"
 
+# Optional: a mailbox labelled "Drafts" is treated specially.
+# Pressing Enter on a draft reopens it in the editor.
+# The send dialog offers [d] to save there.
+[[mailbox]]
+label = "Drafts"
+path  = "/home/you/Mail/Drafts/"
+
 # Optional: run a shell command every N seconds to sync mail.
 # Errors are shown in the status bar; the UI is never blocked.
 [sync]
@@ -53,23 +60,23 @@ Optional files (plain text, loaded from `~/.config/brew/`):
 
 ### Thread list
 
-| Key                   | Action                    |
-| --------------------- | ------------------------- |
-| `j` / `k` / `↑` / `↓` | Move down / up            |
-| `g`                   | Jump to first email       |
-| `G`                   | Jump to last email        |
-| `J` / `K`             | Next / previous mailbox   |
-| `Enter`               | Open email in a new tab   |
-| `r`                   | Reply (empty body)        |
-| `R`                   | Reply (quoted)            |
-| `C`                   | Compose new email         |
-| `v`                   | Toggle read / unread      |
-| `N`                   | Toggle unread-only filter |
-| `/`                   | Search by subject (live)  |
-| `Esc`                 | Clear search filter       |
-| `f`                   | Force sync mailboxes      |
-| `D`                   | Delete email              |
-| `Q`                   | Quit                      |
+| Key                   | Action                                                     |
+| --------------------- | ---------------------------------------------------------- |
+| `j` / `k` / `↑` / `↓` | Move down / up                                             |
+| `g`                   | Jump to first email                                        |
+| `G`                   | Jump to last email                                         |
+| `J` / `K`             | Next / previous mailbox                                    |
+| `Enter`               | Open email in a new tab (Drafts mailbox: reopen in editor) |
+| `r`                   | Reply-all (empty body)                                     |
+| `R`                   | Reply-all (quoted)                                         |
+| `C`                   | Compose new email                                          |
+| `v`                   | Toggle read / unread                                       |
+| `N`                   | Toggle unread-only filter                                  |
+| `/`                   | Search by subject (live)                                   |
+| `Esc`                 | Clear search filter                                        |
+| `f`                   | Force sync mailboxes                                       |
+| `D`                   | Delete email                                               |
+| `Q`                   | Quit                                                       |
 
 ### Email tab
 
@@ -86,6 +93,15 @@ Optional files (plain text, loaded from `~/.config/brew/`):
 | `R`                   | Reply (quoted)                   |
 | `D`                   | Delete email and close tab       |
 | `q`                   | Close tab                        |
+
+### Compose editor
+
+| Key | Action                           |
+| --- | -------------------------------- |
+| `q` | Exit editor and show send dialog |
+| `y` | Send (in send dialog)            |
+| `d` | Save to Drafts (in send dialog)  |
+| `n` | Discard (in send dialog)         |
 
 ### Global
 
