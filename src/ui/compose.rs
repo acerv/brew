@@ -52,6 +52,51 @@ pub fn parse_draft(edited: &str) -> Draft {
     }
 }
 
+/// Convert a draft text into a minimal RFC 2822 email string suitable for
+/// writing into a maildir folder via `Maildir::write_email`.
+pub fn draft_to_rfc2822(draft_text: &str, from: &str) -> String {
+    let draft = parse_draft(draft_text);
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let pid = std::process::id();
+    let message_id = format!("{timestamp}.{pid}.localhost");
+    let mut email = format!("Message-ID: <{message_id}>\r\n");
+    email.push_str(&format!("From: {from}\r\n"));
+    if !draft.to.is_empty() {
+        email.push_str(&format!(
+            "To: {}\r\n",
+            draft
+                .to
+                .iter()
+                .map(|a| a.full())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !draft.cc.is_empty() {
+        email.push_str(&format!(
+            "Cc: {}\r\n",
+            draft
+                .cc
+                .iter()
+                .map(|a| a.full())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if let Some(irt) = &draft.in_reply_to {
+        email.push_str(&format!("In-Reply-To: {irt}\r\n"));
+    }
+    email.push_str(&format!("Subject: {}\r\n", draft.subject));
+    email.push_str("MIME-Version: 1.0\r\n");
+    email.push_str("Content-Type: text/plain; charset=utf-8\r\n");
+    email.push_str("\r\n");
+    email.push_str(&draft.body.replace('\n', "\r\n"));
+    email
+}
+
 /// Generate a compose draft for a new email from scratch.
 pub fn compose_draft() -> String {
     let mut draft = format!("To: \nSubject: \n{BODY_SENTINEL}\n");
@@ -59,6 +104,35 @@ pub fn compose_draft() -> String {
         draft.push_str(&format!("\n--\n{sig}\n"));
     }
     draft
+}
+
+/// Convert an `Email` back into the internal draft text format so it can be
+/// re-opened in the compose editor.
+pub fn email_to_draft(email: &Email) -> Result<String> {
+    let msg = email.to_message()?;
+    let to = collect_mail_parser_addrs(msg.to())
+        .iter()
+        .map(|a| a.full())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let cc = collect_mail_parser_addrs(msg.cc())
+        .iter()
+        .map(|a| a.full())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let body = msg.body_text(0).map(|t| t.into_owned()).unwrap_or_default();
+
+    let mut draft = format!("To: {to}\n");
+    if !cc.is_empty() {
+        draft.push_str(&format!("Cc: {cc}\n"));
+    }
+    draft.push_str(&format!("Subject: {}\n", email.subject));
+    if let Some(irt) = &email.reply_to {
+        draft.push_str(&format!("In-Reply-To: <{irt}>\n"));
+    }
+    draft.push_str(&format!("{BODY_SENTINEL}\n"));
+    draft.push_str(&body);
+    Ok(draft)
 }
 
 /// Extension trait for Email to generate reply drafts.

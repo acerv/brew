@@ -151,6 +151,27 @@ impl Maildir {
             .insert(thread.parent.message_id.clone(), thread.clone());
     }
 
+    /// Validate `content` as a well-formed RFC 2822 email and write it into
+    /// `dir/new/`. Returns an error if the content cannot be parsed or is
+    /// missing required headers.
+    pub fn write_email(&self, content: &str) -> Result<()> {
+        let msg = mail_parser::MessageParser::default()
+            .parse(content.as_bytes())
+            .ok_or_else(|| anyhow::anyhow!("invalid email format"))?;
+        if msg.from().is_none() {
+            return Err(anyhow::anyhow!("missing From header"));
+        }
+        let new_dir = Path::new(&self.dir).join("new");
+        std::fs::create_dir_all(&new_dir)?;
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs();
+        let pid = std::process::id();
+        let filename = format!("{timestamp}.{pid}.localhost");
+        std::fs::write(new_dir.join(filename), content)?;
+        Ok(())
+    }
+
     /// Count the number of unread emails across all threads in this mailbox.
     pub fn unread_count(&self) -> usize {
         self.lookup

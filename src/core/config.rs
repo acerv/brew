@@ -10,6 +10,12 @@ pub struct Mailbox {
     pub path: String,
 }
 
+impl Mailbox {
+    pub fn is_drafts(&self) -> bool {
+        self.label.to_lowercase() == "drafts"
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Smtp {
     pub host: String,

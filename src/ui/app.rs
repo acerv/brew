@@ -291,17 +291,41 @@ impl App {
                 String::new()
             };
             self.close_current_tab();
+            let drafts_idx = self.config.mailboxes.iter().position(|mb| mb.is_drafts());
+            let mut action = SendAction::Discard;
             if let Some(ref mut terminal) = self.terminal {
-                match confirm_and_send(terminal, &text, &self.config.smtp) {
-                    Ok(true) => {
-                        let draft = compose::parse_draft(&text);
-                        let mut addrs = draft.to;
-                        addrs.extend(draft.cc);
-                        self.address_book.harvest(&addrs);
-                    }
+                match confirm_and_send(terminal, &text, &self.config.smtp, drafts_idx.is_some()) {
+                    Ok(a) => action = a,
                     Err(e) => self.status_error = Some(e.to_string()),
-                    _ => {}
                 }
+            }
+            match action {
+                SendAction::Sent => {
+                    let draft = compose::parse_draft(&text);
+                    let mut addrs = draft.to;
+                    addrs.extend(draft.cc);
+                    self.address_book.harvest(&addrs);
+                }
+                SendAction::SaveDraft => {
+                    if let Some(idx) = drafts_idx {
+                        let from = Address::new(
+                            self.config.smtp.name.as_deref().unwrap_or(""),
+                            &self.config.smtp.username,
+                        );
+                        let content = compose::draft_to_rfc2822(&text, &from.full());
+                        if let Some(md) = self.maildirs.get_mut(idx) {
+                            if let Err(e) = md.write_email(&content) {
+                                self.status_error = Some(e.to_string());
+                            } else {
+                                md.sync();
+                                if let Some(tv) = self.threads.get_mut(idx) {
+                                    tv.invalidate();
+                                }
+                            }
+                        }
+                    }
+                }
+                SendAction::Discard => {}
             }
         }
     }
@@ -490,7 +514,18 @@ impl App {
             .threads
             .get(self.current_mb)
             .and_then(|tv| tv.selected());
-        if let Some(thread) = thread {
+        let Some(thread) = thread else { return };
+        let is_drafts = self
+            .config
+            .mailboxes
+            .get(self.current_mb)
+            .is_some_and(|mb| mb.is_drafts());
+        if is_drafts {
+            match compose::email_to_draft(&thread.parent) {
+                Ok(draft) => self.open_editor(draft),
+                Err(e) => self.status_error = Some(e.to_string()),
+            }
+        } else {
             thread.parent.mark_as_read();
             self.open_email(&thread.parent);
         }
@@ -739,19 +774,30 @@ fn draw_statusbar(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, app: 
     frame.render_widget(widget, area);
 }
 
+#[derive(PartialEq)]
+enum SendAction {
+    Sent,
+    Discard,
+    SaveDraft,
+}
+
 fn confirm_and_send(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     edited: &str,
     smtp: &Smtp,
-) -> anyhow::Result<bool> {
-    if !confirm_send(terminal)? {
-        return Ok(false);
+    has_drafts: bool,
+) -> anyhow::Result<SendAction> {
+    let action = confirm_send(terminal, has_drafts)?;
+    if action == SendAction::SaveDraft {
+        return Ok(SendAction::SaveDraft);
+    }
+    if action != SendAction::Sent {
+        return Ok(SendAction::Discard);
     }
 
     let draft = compose::parse_draft(edited);
-
     if draft.to.is_empty() {
-        return Ok(false);
+        return Ok(SendAction::Discard);
     }
 
     send_message(
@@ -763,17 +809,20 @@ fn confirm_and_send(
         draft.in_reply_to.as_deref(),
     )?;
 
-    Ok(true)
+    Ok(SendAction::Sent)
 }
 
-fn confirm_send(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> anyhow::Result<bool> {
+fn confirm_send(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    has_drafts: bool,
+) -> anyhow::Result<SendAction> {
     use crossterm::event::{Event, KeyCode};
     use ratatui::widgets::Clear;
 
     loop {
         terminal.draw(|frame| {
             let area = frame.area();
-            let popup_w: u16 = 36;
+            let popup_w: u16 = if has_drafts { 62 } else { 36 };
             let popup_h: u16 = 5;
             let x = area.width.saturating_sub(popup_w) / 2;
             let y = area.height.saturating_sub(popup_h) / 2;
@@ -789,31 +838,45 @@ fn confirm_send(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> anyhow
             let inner = block.inner(popup_area);
             frame.render_widget(block, popup_area);
 
-            let text = vec![
-                Line::from(""),
-                Line::from(vec![
-                    Span::styled(
-                        "  [ y ]",
-                        Style::default()
-                            .fg(Color::Green)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw("  send    "),
-                    Span::styled(
-                        "[ n / Esc ]",
-                        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw("  cancel"),
-                ]),
+            let mut spans = vec![
+                Span::styled(
+                    "  [ y ]",
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("  send    "),
+                Span::styled(
+                    "[ n / Esc ]",
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("  cancel"),
             ];
+            if has_drafts {
+                spans.push(Span::raw("    "));
+                spans.push(Span::styled(
+                    "[ d ]",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ));
+                spans.push(Span::raw("  save draft"));
+            }
+
+            let text = vec![Line::from(""), Line::from(spans)];
             frame.render_widget(Paragraph::new(text), inner);
         })?;
 
         if let Event::Key(key) = event::read()? {
             match key.code {
-                KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => return Ok(true),
+                KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                    return Ok(SendAction::Sent);
+                }
                 KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc | KeyCode::Char('q') => {
-                    return Ok(false);
+                    return Ok(SendAction::Discard);
+                }
+                KeyCode::Char('d') | KeyCode::Char('D') if has_drafts => {
+                    return Ok(SendAction::SaveDraft);
                 }
                 _ => {}
             }
