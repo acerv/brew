@@ -922,28 +922,30 @@ fn draw_statusbar(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, app: 
 }
 
 fn draw_move_popup(frame: &mut ratatui::Frame, app: &App) {
-    use ratatui::widgets::Clear;
-
     let MoveMode::Active { selected } = app.move_mode else {
         return;
     };
 
-    let targets: Vec<&config::Mailbox> = app
+    let labels: Vec<String> = app
         .config
         .mailboxes
         .iter()
         .enumerate()
         .filter(|(i, _)| *i != app.current_mb)
-        .map(|(_, mb)| mb)
+        .map(|(_, mb)| mb.label.clone())
         .collect();
 
-    if targets.is_empty() {
-        return;
+    if !labels.is_empty() {
+        draw_list_popup(frame, " Move to ", &labels, selected);
     }
+}
 
-    let max_label = targets.iter().map(|mb| mb.label.len()).max().unwrap_or(10);
+fn draw_list_popup(frame: &mut ratatui::Frame, title: &str, items: &[String], selected: usize) {
+    use ratatui::widgets::Clear;
+
+    let max_label = items.iter().map(|l| l.len()).max().unwrap_or(10);
     let popup_w = (max_label as u16 + 8).clamp(22, 40);
-    let popup_h = targets.len() as u16 + 4; // borders + 2 padding lines
+    let popup_h = items.len() as u16 + 4;
 
     let area = frame.area();
     let x = area.width.saturating_sub(popup_w) / 2;
@@ -954,13 +956,12 @@ fn draw_move_popup(frame: &mut ratatui::Frame, app: &App) {
     frame.render_widget(Clear, popup_area);
 
     let block = Block::default().borders(Borders::ALL).title(Span::styled(
-        " Move to ",
+        title.to_string(),
         Style::default().add_modifier(Modifier::BOLD),
     ));
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
 
-    // Split inner: top padding, list, bottom padding
     let inner_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -970,15 +971,15 @@ fn draw_move_popup(frame: &mut ratatui::Frame, app: &App) {
         ])
         .split(inner);
 
-    let items: Vec<ListItem> = targets
+    let list_items: Vec<ListItem> = items
         .iter()
-        .map(|mb| ListItem::new(format!(" {} ", mb.label)))
+        .map(|l| ListItem::new(format!(" {l} ")))
         .collect();
 
     let mut state = ListState::default();
     state.select(Some(selected));
 
-    let list = List::new(items)
+    let list = List::new(list_items)
         .highlight_style(
             Style::default()
                 .fg(Color::Cyan)
@@ -1002,7 +1003,6 @@ fn confirm_send(
     has_drafts: bool,
 ) -> anyhow::Result<SendAction> {
     use crossterm::event::{Event, KeyCode};
-    use ratatui::widgets::Clear;
 
     let labels: &[&str] = if has_drafts {
         &["Send Email", "Save as draft", "Discard"]
@@ -1016,54 +1016,13 @@ fn confirm_send(
         _ => SendAction::Discard,
     };
 
+    let owned: Vec<String> = labels.iter().map(|s| s.to_string()).collect();
     let mut selected: usize = 0;
 
     loop {
         let sel = selected;
         terminal.draw(|frame| {
-            let area = frame.area();
-            let popup_w: u16 = 26;
-            let popup_h: u16 = labels.len() as u16 + 4;
-            let x = area.width.saturating_sub(popup_w) / 2;
-            let y = area.height.saturating_sub(popup_h) / 2;
-            let popup_area =
-                ratatui::layout::Rect::new(x, y, popup_w.min(area.width), popup_h.min(area.height));
-
-            frame.render_widget(Clear, popup_area);
-
-            let block = Block::default().borders(Borders::ALL).title(Span::styled(
-                " Send message? ",
-                Style::default().add_modifier(Modifier::BOLD),
-            ));
-            let inner = block.inner(popup_area);
-            frame.render_widget(block, popup_area);
-
-            let inner_chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(1),
-                    Constraint::Min(0),
-                    Constraint::Length(1),
-                ])
-                .split(inner);
-
-            let items: Vec<ListItem> = labels
-                .iter()
-                .map(|l| ListItem::new(format!(" {l} ")))
-                .collect();
-
-            let mut state = ListState::default();
-            state.select(Some(sel));
-
-            let list = List::new(items)
-                .highlight_style(
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                )
-                .highlight_symbol("> ");
-
-            frame.render_stateful_widget(list, inner_chunks[1], &mut state);
+            draw_list_popup(frame, " Send message? ", &owned, sel);
         })?;
 
         if let Event::Key(key) = event::read()? {
