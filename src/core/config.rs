@@ -254,6 +254,36 @@ password = "pass"
         });
     }
 
+    // ── Mailbox::is_drafts ────────────────────────────────────────────────────
+
+    fn mb(label: &str) -> Mailbox {
+        Mailbox {
+            label: label.to_string(),
+            path: String::new(),
+        }
+    }
+
+    #[test]
+    fn is_drafts_matches_exact_case() {
+        assert!(mb("Drafts").is_drafts());
+    }
+
+    #[test]
+    fn is_drafts_matches_lowercase() {
+        assert!(mb("drafts").is_drafts());
+    }
+
+    #[test]
+    fn is_drafts_matches_uppercase() {
+        assert!(mb("DRAFTS").is_drafts());
+    }
+
+    #[test]
+    fn is_drafts_does_not_match_other_labels() {
+        assert!(!mb("Inbox").is_drafts());
+        assert!(!mb("Sent").is_drafts());
+    }
+
     #[test]
     fn config_load_invalid_toml_returns_error() {
         let _lock = ENV_LOCK.lock().unwrap();

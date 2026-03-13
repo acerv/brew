@@ -758,13 +758,14 @@ fn draw_statusbar(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, app: 
             Style::default().fg(Color::DarkGray),
         )];
         if let Some(tv) = app.threads.get(app.current_mb)
-            && let Some(q) = tv.search() {
-                spans.push(Span::styled("  |  ", Style::default().fg(Color::DarkGray)));
-                spans.push(Span::styled(
-                    format!("search: {q}"),
-                    Style::default().fg(Color::Yellow),
-                ));
-            }
+            && let Some(q) = tv.search()
+        {
+            spans.push(Span::styled("  |  ", Style::default().fg(Color::DarkGray)));
+            spans.push(Span::styled(
+                format!("search: {q}"),
+                Style::default().fg(Color::Yellow),
+            ));
+        }
         Paragraph::new(Line::from(spans))
     } else {
         Paragraph::new(" j/k scroll  J/K email  r reply  R reply+quote  CTRL+n/p tabs  q close")

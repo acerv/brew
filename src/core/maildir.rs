@@ -839,4 +839,50 @@ mod tests {
         assert_eq!(maildir.threads().borrow().len(), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    // ── Maildir::write_email ───────────────────────────────────────────────
+
+    #[test]
+    fn write_email_creates_file_in_new() {
+        let dir = make_maildir();
+        let maildir = Maildir::new(dir.to_str().unwrap()).unwrap();
+        let content = email_content("draft@test", None, "Mon, 01 Jan 2024 00:00:00 +0000");
+        maildir.write_email(&content).unwrap();
+        let new_dir = dir.join("new");
+        let files: Vec<_> = std::fs::read_dir(&new_dir).unwrap().collect();
+        assert_eq!(files.len(), 1, "expected one file in new/");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_email_is_visible_after_sync() {
+        let dir = make_maildir();
+        let mut maildir = Maildir::new(dir.to_str().unwrap()).unwrap();
+        let content = email_content("draft@test", None, "Mon, 01 Jan 2024 00:00:00 +0000");
+        maildir.write_email(&content).unwrap();
+        maildir.sync();
+        assert_eq!(maildir.threads().borrow().len(), 1);
+        assert_eq!(
+            maildir.threads().borrow()[0].parent.message_id,
+            "draft@test"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_email_rejects_missing_from_header() {
+        let dir = make_maildir();
+        let maildir = Maildir::new(dir.to_str().unwrap()).unwrap();
+        let content = "Message-ID: <id@test>\r\nSubject: No From\r\n\r\nBody\r\n";
+        assert!(maildir.write_email(content).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_email_rejects_unparseable_content() {
+        let dir = make_maildir();
+        let maildir = Maildir::new(dir.to_str().unwrap()).unwrap();
+        assert!(maildir.write_email("").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

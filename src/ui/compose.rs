@@ -289,4 +289,154 @@ mod tests {
         assert!(d.subject.is_empty());
         assert!(d.in_reply_to.is_none());
     }
+
+    // ── draft_to_rfc2822 ────────────────────────────────────────────────────
+
+    #[test]
+    fn draft_to_rfc2822_contains_message_id() {
+        let text = "To: alice@x.com\nSubject: Hi\n--- body ---\nHello";
+        let rfc = draft_to_rfc2822(text, "me@x.com");
+        assert!(rfc.contains("Message-ID:"), "got: {rfc}");
+    }
+
+    #[test]
+    fn draft_to_rfc2822_contains_required_headers() {
+        let text = "To: alice@x.com\nCc: bob@x.com\nSubject: Hi\n--- body ---\nHello";
+        let rfc = draft_to_rfc2822(text, "Me <me@x.com>");
+        assert!(rfc.contains("From: Me <me@x.com>"), "got: {rfc}");
+        assert!(rfc.contains("To: alice@x.com"), "got: {rfc}");
+        assert!(rfc.contains("Cc: bob@x.com"), "got: {rfc}");
+        assert!(rfc.contains("Subject: Hi"), "got: {rfc}");
+    }
+
+    #[test]
+    fn draft_to_rfc2822_contains_body() {
+        let text = "To: alice@x.com\nSubject: Hi\n--- body ---\nHello world";
+        let rfc = draft_to_rfc2822(text, "me@x.com");
+        assert!(rfc.contains("Hello world"), "got: {rfc}");
+    }
+
+    #[test]
+    fn draft_to_rfc2822_includes_in_reply_to() {
+        let text = "To: alice@x.com\nSubject: Re: Hi\nIn-Reply-To: <abc@x.com>\n--- body ---\n";
+        let rfc = draft_to_rfc2822(text, "me@x.com");
+        assert!(rfc.contains("In-Reply-To: <abc@x.com>"), "got: {rfc}");
+    }
+
+    // ── email_to_draft ──────────────────────────────────────────────────────
+
+    fn write_tmp_email(content: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "brew-compose-test-{}-{}.eml",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
+    #[test]
+    fn email_to_draft_restores_to_and_subject() {
+        let content = "Message-ID: <id@test>\r\nFrom: alice@x.com\r\nTo: bob@x.com\r\nSubject: Hello\r\nDate: Mon, 01 Jan 2024 00:00:00 +0000\r\n\r\nBody text\r\n";
+        let path = write_tmp_email(content);
+        let email = crate::core::thread::Email::from_file(&path).unwrap();
+        let draft = email_to_draft(&email).unwrap();
+        assert!(draft.contains("To: bob@x.com"), "got: {draft}");
+        assert!(draft.contains("Subject: Hello"), "got: {draft}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn email_to_draft_restores_cc() {
+        let content = "Message-ID: <id@test>\r\nFrom: alice@x.com\r\nTo: bob@x.com\r\nCc: carol@x.com\r\nSubject: Hi\r\nDate: Mon, 01 Jan 2024 00:00:00 +0000\r\n\r\nBody\r\n";
+        let path = write_tmp_email(content);
+        let email = crate::core::thread::Email::from_file(&path).unwrap();
+        let draft = email_to_draft(&email).unwrap();
+        assert!(draft.contains("Cc: carol@x.com"), "got: {draft}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn email_to_draft_restores_body() {
+        let content = "Message-ID: <id@test>\r\nFrom: alice@x.com\r\nTo: bob@x.com\r\nSubject: Hi\r\nDate: Mon, 01 Jan 2024 00:00:00 +0000\r\n\r\nHello world\r\n";
+        let path = write_tmp_email(content);
+        let email = crate::core::thread::Email::from_file(&path).unwrap();
+        let draft = email_to_draft(&email).unwrap();
+        assert!(draft.contains("Hello world"), "got: {draft}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn email_to_draft_roundtrips_via_rfc2822() {
+        let original = "To: alice@x.com\nSubject: Test\n--- body ---\nHi there";
+        let rfc = draft_to_rfc2822(original, "me@x.com");
+        let path = write_tmp_email(&rfc);
+        let email = crate::core::thread::Email::from_file(&path).unwrap();
+        let draft = email_to_draft(&email).unwrap();
+        assert!(draft.contains("To: alice@x.com"), "got: {draft}");
+        assert!(draft.contains("Subject: Test"), "got: {draft}");
+        assert!(draft.contains("Hi there"), "got: {draft}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ── reply_draft Cc behaviour ─────────────────────────────────────────────
+
+    #[test]
+    fn reply_draft_cc_includes_original_to() {
+        let content = "Message-ID: <id@test>\r\nFrom: alice@x.com\r\nTo: me@x.com, bob@x.com\r\nSubject: Hi\r\nDate: Mon, 01 Jan 2024 00:00:00 +0000\r\n\r\nBody\r\n";
+        let path = write_tmp_email(content);
+        let email = crate::core::thread::Email::from_file(&path).unwrap();
+        let draft = email.reply_draft(false, "me@x.com").unwrap();
+        assert!(
+            draft.contains("bob@x.com"),
+            "original To recipient should be in Cc: {draft}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn reply_draft_cc_excludes_own_address() {
+        let content = "Message-ID: <id@test>\r\nFrom: alice@x.com\r\nTo: me@x.com, bob@x.com\r\nSubject: Hi\r\nDate: Mon, 01 Jan 2024 00:00:00 +0000\r\n\r\nBody\r\n";
+        let path = write_tmp_email(content);
+        let email = crate::core::thread::Email::from_file(&path).unwrap();
+        let draft = email.reply_draft(false, "me@x.com").unwrap();
+        let cc_line = draft.lines().find(|l| l.starts_with("Cc:")).unwrap_or("");
+        assert!(
+            !cc_line.contains("me@x.com"),
+            "own address must not appear in Cc: {draft}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn reply_draft_cc_merges_original_cc() {
+        let content = "Message-ID: <id@test>\r\nFrom: alice@x.com\r\nTo: bob@x.com\r\nCc: carol@x.com\r\nSubject: Hi\r\nDate: Mon, 01 Jan 2024 00:00:00 +0000\r\n\r\nBody\r\n";
+        let path = write_tmp_email(content);
+        let email = crate::core::thread::Email::from_file(&path).unwrap();
+        let draft = email.reply_draft(false, "me@x.com").unwrap();
+        assert!(
+            draft.contains("bob@x.com"),
+            "original To should be in Cc: {draft}"
+        );
+        assert!(
+            draft.contains("carol@x.com"),
+            "original Cc should be in Cc: {draft}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn reply_draft_deduplicates_cc() {
+        let content = "Message-ID: <id@test>\r\nFrom: alice@x.com\r\nTo: bob@x.com\r\nCc: bob@x.com\r\nSubject: Hi\r\nDate: Mon, 01 Jan 2024 00:00:00 +0000\r\n\r\nBody\r\n";
+        let path = write_tmp_email(content);
+        let email = crate::core::thread::Email::from_file(&path).unwrap();
+        let draft = email.reply_draft(false, "me@x.com").unwrap();
+        let cc_line = draft.lines().find(|l| l.starts_with("Cc:")).unwrap_or("");
+        let count = cc_line.matches("bob@x.com").count();
+        assert_eq!(count, 1, "bob@x.com must appear only once in Cc: {draft}");
+        let _ = std::fs::remove_file(&path);
+    }
 }
