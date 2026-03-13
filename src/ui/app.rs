@@ -305,7 +305,7 @@ impl App {
     }
 
     fn handle_compose_tab_key(&mut self, key: KeyEvent, ei: usize) {
-        let should_close = if let Tab::Compose(ref mut ed) = self.tabs[ei] {
+        let should_show_dialog = if let Tab::Compose(ref mut ed) = self.tabs[ei] {
             if matches!(key.code, KeyCode::Char('q')) && ed.mode() == EditorMode::Normal {
                 true
             } else {
@@ -316,49 +316,73 @@ impl App {
         } else {
             false
         };
-        if should_close {
-            let text = if let Tab::Compose(ref ed) = self.tabs[ei] {
-                ed.text()
-            } else {
-                String::new()
-            };
-            self.close_current_tab();
-            let drafts_idx = self.config.mailboxes.iter().position(|mb| mb.is_drafts());
-            let mut action = SendAction::Discard;
-            if let Some(ref mut terminal) = self.terminal {
-                match confirm_and_send(terminal, &text, &self.config.smtp, drafts_idx.is_some()) {
-                    Ok(a) => action = a,
-                    Err(e) => self.status_error = Some(e.to_string()),
+
+        if !should_show_dialog {
+            return;
+        }
+
+        // Extract text before borrowing terminal
+        let text = if let Tab::Compose(ref ed) = self.tabs[ei] {
+            ed.text()
+        } else {
+            return;
+        };
+
+        let drafts_idx = self.config.mailboxes.iter().position(|mb| mb.is_drafts());
+        let mut action = SendAction::GoBack;
+        if let Some(ref mut terminal) = self.terminal {
+            match confirm_send(terminal, drafts_idx.is_some()) {
+                Ok(a) => action = a,
+                Err(e) => self.status_error = Some(e.to_string()),
+            }
+        }
+
+        // ESC: return to editor without closing
+        if action == SendAction::GoBack {
+            return;
+        }
+
+        self.close_current_tab();
+
+        match action {
+            SendAction::Sent => {
+                let draft = compose::parse_draft(&text);
+                let mut addrs = draft.to.clone();
+                addrs.extend(draft.cc.clone());
+                self.address_book.harvest(&addrs);
+                if !draft.to.is_empty()
+                    && let Err(e) = send_message(
+                        &self.config.smtp,
+                        &draft.to,
+                        &draft.cc,
+                        &draft.subject,
+                        &draft.body,
+                        draft.in_reply_to.as_deref(),
+                    )
+                {
+                    self.status_error = Some(e.to_string());
                 }
             }
-            match action {
-                SendAction::Sent => {
-                    let draft = compose::parse_draft(&text);
-                    let mut addrs = draft.to;
-                    addrs.extend(draft.cc);
-                    self.address_book.harvest(&addrs);
-                }
-                SendAction::SaveDraft => {
-                    if let Some(idx) = drafts_idx {
-                        let from = Address::new(
-                            self.config.smtp.name.as_deref().unwrap_or(""),
-                            &self.config.smtp.username,
-                        );
-                        let content = compose::draft_to_rfc2822(&text, &from.full());
-                        if let Some(md) = self.maildirs.get_mut(idx) {
-                            if let Err(e) = md.write_email(&content) {
-                                self.status_error = Some(e.to_string());
-                            } else {
-                                md.sync();
-                                if let Some(tv) = self.threads.get_mut(idx) {
-                                    tv.invalidate();
-                                }
+            SendAction::SaveDraft => {
+                if let Some(idx) = drafts_idx {
+                    let from = Address::new(
+                        self.config.smtp.name.as_deref().unwrap_or(""),
+                        &self.config.smtp.username,
+                    );
+                    let content = compose::draft_to_rfc2822(&text, &from.full());
+                    if let Some(md) = self.maildirs.get_mut(idx) {
+                        if let Err(e) = md.write_email(&content) {
+                            self.status_error = Some(e.to_string());
+                        } else {
+                            md.sync();
+                            if let Some(tv) = self.threads.get_mut(idx) {
+                                tv.invalidate();
                             }
                         }
                     }
                 }
-                SendAction::Discard => {}
             }
+            SendAction::Discard | SendAction::GoBack => {}
         }
     }
 
@@ -962,37 +986,7 @@ enum SendAction {
     Sent,
     Discard,
     SaveDraft,
-}
-
-fn confirm_and_send(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    edited: &str,
-    smtp: &Smtp,
-    has_drafts: bool,
-) -> anyhow::Result<SendAction> {
-    let action = confirm_send(terminal, has_drafts)?;
-    if action == SendAction::SaveDraft {
-        return Ok(SendAction::SaveDraft);
-    }
-    if action != SendAction::Sent {
-        return Ok(SendAction::Discard);
-    }
-
-    let draft = compose::parse_draft(edited);
-    if draft.to.is_empty() {
-        return Ok(SendAction::Discard);
-    }
-
-    send_message(
-        smtp,
-        &draft.to,
-        &draft.cc,
-        &draft.subject,
-        &draft.body,
-        draft.in_reply_to.as_deref(),
-    )?;
-
-    Ok(SendAction::Sent)
+    GoBack,
 }
 
 fn confirm_send(
@@ -1002,11 +996,26 @@ fn confirm_send(
     use crossterm::event::{Event, KeyCode};
     use ratatui::widgets::Clear;
 
+    let labels: &[&str] = if has_drafts {
+        &["Send Email", "Save as draft", "Discard"]
+    } else {
+        &["Send Email", "Discard"]
+    };
+
+    let to_action = |idx: usize| match labels[idx] {
+        "Send Email" => SendAction::Sent,
+        "Save as draft" => SendAction::SaveDraft,
+        _ => SendAction::Discard,
+    };
+
+    let mut selected: usize = 0;
+
     loop {
+        let sel = selected;
         terminal.draw(|frame| {
             let area = frame.area();
-            let popup_w: u16 = if has_drafts { 62 } else { 36 };
-            let popup_h: u16 = 5;
+            let popup_w: u16 = 26;
+            let popup_h: u16 = labels.len() as u16 + 4;
             let x = area.width.saturating_sub(popup_w) / 2;
             let y = area.height.saturating_sub(popup_h) / 2;
             let popup_area =
@@ -1015,51 +1024,53 @@ fn confirm_send(
             frame.render_widget(Clear, popup_area);
 
             let block = Block::default().borders(Borders::ALL).title(Span::styled(
-                " Send reply? ",
+                " Send message? ",
                 Style::default().add_modifier(Modifier::BOLD),
             ));
             let inner = block.inner(popup_area);
             frame.render_widget(block, popup_area);
 
-            let mut spans = vec![
-                Span::styled(
-                    "  [ y ]",
-                    Style::default()
-                        .fg(Color::Green)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw("  send    "),
-                Span::styled(
-                    "[ n / Esc ]",
-                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-                ),
-                Span::raw("  cancel"),
-            ];
-            if has_drafts {
-                spans.push(Span::raw("    "));
-                spans.push(Span::styled(
-                    "[ d ]",
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ));
-                spans.push(Span::raw("  save draft"));
-            }
+            let inner_chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(1),
+                    Constraint::Min(0),
+                    Constraint::Length(1),
+                ])
+                .split(inner);
 
-            let text = vec![Line::from(""), Line::from(spans)];
-            frame.render_widget(Paragraph::new(text), inner);
+            let items: Vec<ListItem> = labels
+                .iter()
+                .map(|l| ListItem::new(format!(" {l} ")))
+                .collect();
+
+            let mut state = ListState::default();
+            state.select(Some(sel));
+
+            let list = List::new(items)
+                .highlight_style(
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .highlight_symbol("> ");
+
+            frame.render_stateful_widget(list, inner_chunks[1], &mut state);
         })?;
 
         if let Event::Key(key) = event::read()? {
             match key.code {
-                KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
-                    return Ok(SendAction::Sent);
+                KeyCode::Char('j') | KeyCode::Down => {
+                    selected = (selected + 1).min(labels.len().saturating_sub(1));
                 }
-                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc | KeyCode::Char('q') => {
-                    return Ok(SendAction::Discard);
+                KeyCode::Char('k') | KeyCode::Up => {
+                    selected = selected.saturating_sub(1);
                 }
-                KeyCode::Char('d') | KeyCode::Char('D') if has_drafts => {
-                    return Ok(SendAction::SaveDraft);
+                KeyCode::Enter => {
+                    return Ok(to_action(selected));
+                }
+                KeyCode::Esc => {
+                    return Ok(SendAction::GoBack);
                 }
                 _ => {}
             }

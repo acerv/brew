@@ -101,12 +101,12 @@ Optional files (plain text, loaded from `~/.config/brew/`):
 
 ### Compose editor
 
-| Key | Action                           |
-| --- | -------------------------------- |
-| `q` | Exit editor and show send dialog |
-| `y` | Send (in send dialog)            |
-| `d` | Save to Drafts (in send dialog)  |
-| `n` | Discard (in send dialog)         |
+| Key          | Action                                           |
+| ------------ | ------------------------------------------------ |
+| `q`          | Exit editor and show send dialog                 |
+| `j` / `k`   | Navigate options in send dialog                  |
+| `Enter`      | Confirm selected option (Send / Save draft / Discard) |
+| `Esc`        | Return to editor from send dialog                |
 
 ### Global
 
