@@ -62,14 +62,14 @@ pub struct App {
     status_error: Option<String>,
     terminal: Option<Terminal<CrosstermBackend<io::Stdout>>>,
     address_book: AddressBook,
-    clipboard: Clipboard,
+    clipboard: Option<Clipboard>,
 }
 
 impl App {
     pub fn new(config: Config) -> anyhow::Result<Self> {
         let mut maildirs = Vec::new();
         let mut threads = Vec::new();
-        let clipboard = Clipboard::new()?;
+        let clipboard = Clipboard::new().ok();
 
         for mb in &config.mailboxes {
             let maildir = Maildir::new(&mb.path).unwrap_or_default();
@@ -448,7 +448,9 @@ impl App {
             (_, KeyCode::Char('Y')) => {
                 if let Some(Tab::Email(ev)) = self.tabs.get_mut(ei) {
                     let raw = ev.raw_body();
-                    if let Err(e) = self.clipboard.set_text(raw) {
+                    if let Some(ref mut cb) = self.clipboard
+                        && let Err(e) = cb.set_text(raw)
+                    {
                         self.status_error = Some(e.to_string());
                     }
                 }
@@ -1174,7 +1176,6 @@ mod tests {
         if !cfg.mailboxes.is_empty() {
             sidebar_state.select(Some(0));
         }
-        let clipboard = Clipboard::new();
         App {
             sidebar_state,
             config: cfg,
@@ -1189,7 +1190,7 @@ mod tests {
             status_error: None,
             terminal: None,
             address_book: AddressBook::load(),
-            clipboard: clipboard.unwrap(),
+            clipboard: Clipboard::new().ok(),
         }
     }
 
