@@ -46,23 +46,23 @@ impl ThreadsView {
         }
     }
 
-    pub fn prev_email(&mut self) {
+    pub fn prev_email(&mut self, n: usize) {
         if self.rows.is_empty() {
             return;
         }
 
         if let Some(i) = self.state.selected() {
-            self.state.select(Some(i.saturating_sub(1)));
+            self.state.select(Some(i.saturating_sub(n)));
         }
     }
 
-    pub fn next_email(&mut self) {
+    pub fn next_email(&mut self, n: usize) {
         if self.rows.is_empty() {
             return;
         }
 
         if let Some(i) = self.state.selected() {
-            let next = i.saturating_add(1).min(self.rows.len().saturating_sub(1));
+            let next = i.saturating_add(n).min(self.rows.len().saturating_sub(1));
             self.state.select(Some(next));
         }
     }
@@ -354,7 +354,7 @@ mod tests {
             thread("c", "", "C", false),
         ]);
         let mut view = ThreadsView::new(list.clone());
-        view.next_email(); // select "b"
+        view.next_email(1); // select "b"
         assert_eq!(view.selected().unwrap().parent.message_id, "b");
 
         // Refresh with same threads in a different order
@@ -376,8 +376,8 @@ mod tests {
             thread("d", "", "D", false),
         ]);
         let mut view = ThreadsView::new(list.clone());
-        view.next_email();
-        view.next_email(); // select index 2 ("c")
+        view.next_email(1);
+        view.next_email(1); // select index 2 ("c")
 
         // Remove "c" — the item now at index 2 is "d"
         *list.borrow_mut() = vec![
@@ -397,8 +397,8 @@ mod tests {
             thread("c", "", "C", false),
         ]);
         let mut view = ThreadsView::new(list.clone());
-        view.next_email();
-        view.next_email(); // select index 2 ("c")
+        view.next_email(1);
+        view.next_email(1); // select index 2 ("c")
 
         // Shrink to one item — index 2 doesn't exist, clamp to 0
         *list.borrow_mut() = vec![thread("a", "", "A", false)];
@@ -432,7 +432,7 @@ mod tests {
             thread("a", "", "A", false),
             thread("b", "", "B", false),
         ]));
-        view.prev_email();
+        view.prev_email(1);
         assert_eq!(view.selected().unwrap().parent.message_id, "a");
     }
 
@@ -442,15 +442,15 @@ mod tests {
             thread("a", "", "A", false),
             thread("b", "", "B", false),
         ]));
-        view.next_email();
+        view.next_email(1);
         assert_eq!(view.selected().unwrap().parent.message_id, "b");
     }
 
     #[test]
     fn next_at_last_stays() {
         let mut view = ThreadsView::new(tlist(vec![thread("a", "", "A", false)]));
-        view.next_email();
-        view.next_email();
+        view.next_email(1);
+        view.next_email(1);
         assert_eq!(view.selected().unwrap().parent.message_id, "a");
     }
 
@@ -460,23 +460,73 @@ mod tests {
             thread("a", "", "A", false),
             thread("b", "", "B", false),
         ]));
-        view.next_email();
-        view.prev_email();
+        view.next_email(1);
+        view.prev_email(1);
         assert_eq!(view.selected().unwrap().parent.message_id, "a");
     }
 
     #[test]
     fn next_on_empty_does_not_panic() {
         let mut view = ThreadsView::new(tlist(vec![]));
-        view.next_email();
+        view.next_email(1);
         assert!(view.selected().is_none());
     }
 
     #[test]
     fn prev_on_empty_does_not_panic() {
         let mut view = ThreadsView::new(tlist(vec![]));
-        view.prev_email();
+        view.prev_email(1);
         assert!(view.selected().is_none());
+    }
+
+    #[test]
+    fn next_skips_multiple_steps() {
+        let mut view = ThreadsView::new(tlist(vec![
+            thread("a", "", "A", false),
+            thread("b", "", "B", false),
+            thread("c", "", "C", false),
+            thread("d", "", "D", false),
+            thread("e", "", "E", false),
+        ]));
+        view.next_email(3);
+        assert_eq!(view.selected().unwrap().parent.message_id, "d");
+    }
+
+    #[test]
+    fn prev_skips_multiple_steps() {
+        let mut view = ThreadsView::new(tlist(vec![
+            thread("a", "", "A", false),
+            thread("b", "", "B", false),
+            thread("c", "", "C", false),
+            thread("d", "", "D", false),
+            thread("e", "", "E", false),
+        ]));
+        view.next_email(4);
+        view.prev_email(3);
+        assert_eq!(view.selected().unwrap().parent.message_id, "b");
+    }
+
+    #[test]
+    fn next_clamps_at_last() {
+        let mut view = ThreadsView::new(tlist(vec![
+            thread("a", "", "A", false),
+            thread("b", "", "B", false),
+            thread("c", "", "C", false),
+        ]));
+        view.next_email(100);
+        assert_eq!(view.selected().unwrap().parent.message_id, "c");
+    }
+
+    #[test]
+    fn prev_clamps_at_first() {
+        let mut view = ThreadsView::new(tlist(vec![
+            thread("a", "", "A", false),
+            thread("b", "", "B", false),
+            thread("c", "", "C", false),
+        ]));
+        view.next_email(2);
+        view.prev_email(100);
+        assert_eq!(view.selected().unwrap().parent.message_id, "a");
     }
 
     // ── first / last email ─────────────────────────────────────────────────
@@ -488,8 +538,8 @@ mod tests {
             thread("b", "", "B", false),
             thread("c", "", "C", false),
         ]));
-        view.next_email();
-        view.next_email(); // select "c"
+        view.next_email(1);
+        view.next_email(1); // select "c"
         view.first_email();
         assert_eq!(view.selected().unwrap().parent.message_id, "a");
     }
@@ -564,8 +614,8 @@ mod tests {
             thread("b", "Bob", "Unread", true),
             thread("c", "Carol", "Also unread", true),
         ]));
-        view.next_email();
-        view.next_email(); // select "c"
+        view.next_email(1);
+        view.next_email(1); // select "c"
         view.toggle_unread();
         assert_eq!(view.selected().unwrap().parent.message_id, "c");
     }

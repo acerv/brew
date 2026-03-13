@@ -223,16 +223,16 @@ impl App {
     }
 
     fn handle_main_key(&mut self, key: KeyEvent) -> bool {
-        match key.code {
-            KeyCode::Char('Q') => return false,
-            KeyCode::Char('f') => self.trigger_sync(),
-            KeyCode::Char('D') => self.delete_selected_thread(),
-            KeyCode::Char('N') => {
+        match (key.modifiers, key.code) {
+            (_, KeyCode::Char('Q')) => return false,
+            (_, KeyCode::Char('f')) => self.trigger_sync(),
+            (_, KeyCode::Char('D')) => self.delete_selected_thread(),
+            (_, KeyCode::Char('N')) => {
                 if let Some(tv) = self.threads.get_mut(self.current_mb) {
                     tv.toggle_unread();
                 }
             }
-            KeyCode::Char('s') => {
+            (_, KeyCode::Char('s')) => {
                 let idx = self.current_mb;
                 if let Some(md) = self.maildirs.get_mut(idx) {
                     md.set_sort_order(md.sort_order().toggle());
@@ -241,39 +241,45 @@ impl App {
                     }
                 }
             }
-            KeyCode::Char('J') => {
-                self.next_mailbox();
-            }
-            KeyCode::Char('K') => {
-                self.prev_mailbox();
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
+            (_, KeyCode::Char('J')) => self.next_mailbox(),
+            (_, KeyCode::Char('K')) => self.prev_mailbox(),
+            (_, KeyCode::Char('j') | KeyCode::Down) => {
                 if let Some(tv) = self.threads.get_mut(self.current_mb) {
-                    tv.next_email();
+                    tv.next_email(1);
                 }
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            (_, KeyCode::Char('k') | KeyCode::Up) => {
                 if let Some(tv) = self.threads.get_mut(self.current_mb) {
-                    tv.prev_email();
+                    tv.prev_email(1);
                 }
             }
-            KeyCode::Char('g') => {
+            (KeyModifiers::CONTROL, KeyCode::Char('d')) | (_, KeyCode::PageDown) => {
+                if let Some(tv) = self.threads.get_mut(self.current_mb) {
+                    tv.next_email(15);
+                }
+            }
+            (KeyModifiers::CONTROL, KeyCode::Char('u')) | (_, KeyCode::PageUp) => {
+                if let Some(tv) = self.threads.get_mut(self.current_mb) {
+                    tv.prev_email(15);
+                }
+            }
+            (_, KeyCode::Char('g')) => {
                 if let Some(tv) = self.threads.get_mut(self.current_mb) {
                     tv.first_email();
                 }
             }
-            KeyCode::Char('G') => {
+            (_, KeyCode::Char('G')) => {
                 if let Some(tv) = self.threads.get_mut(self.current_mb) {
                     tv.last_email();
                 }
             }
-            KeyCode::Enter => self.open_selected_email(),
-            KeyCode::Char('/') => {
+            (_, KeyCode::Enter) => self.open_selected_email(),
+            (_, KeyCode::Char('/')) => {
                 self.search = SearchMode::Typing(String::new());
             }
-            KeyCode::Esc => self.reset_search(),
-            KeyCode::Char('v') => self.toggle_read(),
-            KeyCode::Char('m') => {
+            (_, KeyCode::Esc) => self.reset_search(),
+            (_, KeyCode::Char('v')) => self.toggle_read(),
+            (_, KeyCode::Char('m')) => {
                 if self
                     .threads
                     .get(self.current_mb)
@@ -284,9 +290,9 @@ impl App {
                     self.move_mode = MoveMode::Active { selected: 0 };
                 }
             }
-            KeyCode::Char('C') => self.compose(),
-            KeyCode::Char('r') => self.open_reply_from_thread(false),
-            KeyCode::Char('R') => self.open_reply_from_thread(true),
+            (_, KeyCode::Char('C')) => self.compose(),
+            (_, KeyCode::Char('r')) => self.open_reply_from_thread(false),
+            (_, KeyCode::Char('R')) => self.open_reply_from_thread(true),
             _ => {}
         }
         true
@@ -391,13 +397,13 @@ impl App {
             (_, KeyCode::Char('q')) => self.close_current_tab(),
             (_, KeyCode::Char('J')) => {
                 if let Some(tv) = self.threads.get_mut(self.current_mb) {
-                    tv.next_email();
+                    tv.next_email(1);
                 }
                 self.open_selected_email();
             }
             (_, KeyCode::Char('K')) => {
                 if let Some(tv) = self.threads.get_mut(self.current_mb) {
-                    tv.prev_email();
+                    tv.prev_email(1);
                 }
                 self.open_selected_email();
             }
@@ -1368,7 +1374,7 @@ mod tests {
         app.threads[0] = ThreadsView::new(make_threads(&["a", "b"]));
         // start on "b"
         if let Some(tv) = app.threads.get_mut(0) {
-            tv.next_email();
+            tv.next_email(1);
         }
         push_tab(&mut app, "current");
         app.handle_key(key(KeyCode::Char('K')));
