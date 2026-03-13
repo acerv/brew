@@ -23,7 +23,6 @@ impl Address {
         &self.name
     }
 
-    #[cfg(test)]
     pub fn address(&self) -> &str {
         &self.addr
     }

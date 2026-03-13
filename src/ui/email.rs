@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@suse.com>
 use crate::core::address::Address;
 use crate::core::thread::Email;
-use crate::ui::utils;
 use anyhow::Result;
 use ratatui::{
     layout::{Constraint, Direction, Layout},
@@ -114,7 +113,7 @@ impl EmailView {
 /// body block below it.
 pub fn draw(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, view: &mut EmailView) {
     const LABEL: usize = 7;
-    let inner_width = area.width.saturating_sub(2) as usize;
+    let inner_width = area.width as usize;
     let value_width = inner_width.saturating_sub(LABEL).max(1);
 
     let from_str = format_addr_list(&view.from);
@@ -123,8 +122,10 @@ pub fn draw(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, view: &mut 
     let from_lines = wrap_header_field("From : ", &from_str, value_width);
     let to_lines = wrap_header_field("To   : ", &to_str, value_width);
     let cc_lines = wrap_header_field("Cc   : ", &cc_str, value_width);
+    let subject_lines = wrap_header_field("Subj : ", view.subject(), value_width);
 
-    let header_height = (from_lines.len() + to_lines.len() + cc_lines.len() + 1 + 2) as u16;
+    let header_height =
+        (from_lines.len() + to_lines.len() + cc_lines.len() + subject_lines.len() + 1 + 1) as u16;
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -139,24 +140,20 @@ pub fn draw(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, view: &mut 
         Span::styled("Date : ", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw(view.date.clone()),
     ]));
+    header_text.extend(subject_lines);
 
-    let header = Paragraph::new(header_text).block(Block::default().borders(Borders::ALL).title(
-        Span::styled(
-            format!(" {} ", utils::truncate_string(view.subject(), 60)),
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
-    ));
+    let header = Paragraph::new(header_text).block(Block::default().borders(Borders::BOTTOM));
     frame.render_widget(header, chunks[0]);
 
-    // Calculate viewport height (subtract 2 for borders)
-    let body_height = chunks[1].height.saturating_sub(2) as usize;
+    // Calculate viewport height
+    let body_height = chunks[1].height as usize;
     let max_scroll = view.body_lines.len().saturating_sub(body_height) as u16;
 
     // Clamp scroll so last line stays at bottom when content fits
     view.scroll = view.scroll.min(max_scroll);
 
     let body = Paragraph::new(view.body_lines.to_vec())
-        .block(Block::default().borders(Borders::ALL))
+        .block(Block::default().borders(Borders::NONE))
         .wrap(Wrap { trim: false })
         .scroll((view.scroll, 0));
     frame.render_widget(body, chunks[1]);

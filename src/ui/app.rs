@@ -545,7 +545,7 @@ impl App {
         else {
             return;
         };
-        match thread.parent.reply_draft(quote) {
+        match thread.parent.reply_draft(quote, &self.config.smtp.username) {
             Ok(draft) => self.open_editor(draft),
             Err(e) => self.status_error = Some(e.to_string()),
         }
@@ -558,7 +558,7 @@ impl App {
         };
         let path = ev.path().to_path_buf();
         match Email::from_file(&path) {
-            Ok(email) => match email.reply_draft(quote) {
+            Ok(email) => match email.reply_draft(quote, &self.config.smtp.username) {
                 Ok(draft) => self.open_editor(draft),
                 Err(e) => self.status_error = Some(e.to_string()),
             },
@@ -598,6 +598,7 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
+            Constraint::Length(1),
             Constraint::Min(0),
             Constraint::Length(1),
         ])
@@ -627,17 +628,18 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                 .add_modifier(Modifier::BOLD),
         );
     frame.render_widget(tab_bar, chunks[0]);
+    frame.render_widget(Block::default().borders(Borders::TOP), chunks[1]);
 
     if app.current_tab == 0 {
-        draw_main(frame, chunks[1], app);
+        draw_main(frame, chunks[2], app);
     } else if let Some(tab) = app.tabs.get_mut(app.current_tab.saturating_sub(1)) {
         match tab {
-            Tab::Email(ev) => email::draw(frame, chunks[1], ev),
-            Tab::Compose(ed) => editor::draw(frame, chunks[1], ed),
+            Tab::Email(ev) => email::draw(frame, chunks[2], ev),
+            Tab::Compose(ed) => editor::draw(frame, chunks[2], ed),
         }
     }
 
-    draw_statusbar(frame, chunks[2], app);
+    draw_statusbar(frame, chunks[3], app);
 }
 
 fn draw_main(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &mut App) {
@@ -647,17 +649,14 @@ fn draw_main(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &mut 
         .split(area);
 
     app.sidebar_state.select(Some(app.current_mb));
-    let unread_filter = app
-        .threads
-        .get(app.current_mb)
-        .is_some_and(|tv| tv.is_unread_only());
+    let unread_filters: Vec<bool> = app.threads.iter().map(|tv| tv.is_unread_only()).collect();
     draw_sidebar(
         frame,
         chunks[0],
         &mut app.sidebar_state,
         &app.config.mailboxes,
         &app.maildirs,
-        unread_filter,
+        &unread_filters,
     );
 
     if let Some(tv) = app.threads.get_mut(app.current_mb) {
@@ -671,16 +670,18 @@ fn draw_sidebar(
     state: &mut ListState,
     mailboxes: &[config::Mailbox],
     maildirs: &[Maildir],
-    unread_filter: bool,
+    unread_filters: &[bool],
 ) {
     let items: Vec<ListItem> = mailboxes
         .iter()
-        .map(|m| {
+        .enumerate()
+        .map(|(i, m)| {
             let unread = maildirs
                 .iter()
                 .find(|md| md.path() == m.path)
                 .map(|md| md.unread_count())
                 .unwrap_or(0);
+            let filter_active = unread_filters.get(i).copied().unwrap_or(false);
             let (text, style) = if unread > 0 {
                 (
                     format!("{} ({})", m.label, unread),
@@ -691,20 +692,19 @@ fn draw_sidebar(
             } else {
                 (m.label.clone(), Style::default())
             };
-            ListItem::new(Line::from(Span::styled(text, style)))
+            let mut spans = vec![Span::styled(text, style)];
+            if filter_active {
+                spans.push(Span::styled(" [u]", Style::default().fg(Color::Yellow)));
+            }
+            ListItem::new(Line::from(spans))
         })
         .collect();
 
-    let title = if unread_filter {
-        " Mailbox [unread] "
-    } else {
-        " Mailbox "
-    };
     let widget = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(title))
+        .block(Block::default().borders(Borders::RIGHT))
         .highlight_style(
             Style::default()
-                .fg(Color::Yellow)
+                .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("> ");
@@ -718,10 +718,20 @@ fn draw_statusbar(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, app: 
     } else if let Some(err) = &app.status_error {
         Paragraph::new(format!(" error: {err}")).style(Style::default().fg(Color::Red))
     } else if app.current_tab == 0 {
-        Paragraph::new(
-            " j/k↑↓ move  J/K mailbox  Enter open  r reply  R reply+quote  CTRL+n/p tabs  Q quit",
-        )
-        .style(Style::default().fg(Color::DarkGray))
+        let mut spans = vec![Span::styled(
+            " j/k↑↓ move  J/K mailbox  Enter open  r reply  R reply+quote  / search  CTRL+n/p tabs  Q quit",
+            Style::default().fg(Color::DarkGray),
+        )];
+        if let Some(tv) = app.threads.get(app.current_mb) {
+            if let Some(q) = tv.search() {
+                spans.push(Span::styled("  |  ", Style::default().fg(Color::DarkGray)));
+                spans.push(Span::styled(
+                    format!("search: {q}"),
+                    Style::default().fg(Color::Yellow),
+                ));
+            }
+        }
+        Paragraph::new(Line::from(spans))
     } else {
         Paragraph::new(" j/k scroll  J/K email  r reply  R reply+quote  CTRL+n/p tabs  q close")
             .style(Style::default().fg(Color::DarkGray))
@@ -1291,7 +1301,7 @@ mod tests {
         state: &mut ListState,
         mailboxes: &[config::Mailbox],
         maildirs: &[Maildir],
-        unread_filter: bool,
+        unread_filters: &[bool],
         w: u16,
         h: u16,
     ) -> Vec<String> {
@@ -1306,7 +1316,7 @@ mod tests {
                     state,
                     mailboxes,
                     maildirs,
-                    unread_filter,
+                    unread_filters,
                 );
             })
             .unwrap();
@@ -1339,18 +1349,9 @@ mod tests {
         let mut state = ListState::default();
         state.select(Some(0));
         let mailboxes = vec![mb("Inbox", "/inbox"), mb("Sent", "/sent")];
-        let lines = rendered_sidebar_lines(&mut state, &mailboxes, &[], false, 30, 6);
-        assert!(lines[0].contains("Mailbox"), "got: {:?}", lines[0]);
-        assert!(!lines[0].contains("[unread]"), "got: {:?}", lines[0]);
-    }
-
-    #[test]
-    fn draw_sidebar_shows_unread_title_when_filtered() {
-        let mut state = ListState::default();
-        state.select(Some(0));
-        let mailboxes = vec![mb("Inbox", "/inbox")];
-        let lines = rendered_sidebar_lines(&mut state, &mailboxes, &[], true, 30, 6);
-        assert!(lines[0].contains("[unread]"), "got: {:?}", lines[0]);
+        let lines = rendered_sidebar_lines(&mut state, &mailboxes, &[], &[], 30, 6);
+        let content: String = lines.join("\n");
+        assert!(content.contains("Inbox"), "got:\n{}", content);
     }
 
     #[test]
@@ -1362,19 +1363,11 @@ mod tests {
             mb("Sent", "/sent"),
             mb("Drafts", "/drafts"),
         ];
-        let lines = rendered_sidebar_lines(&mut state, &mailboxes, &[], false, 30, 6);
+        let lines = rendered_sidebar_lines(&mut state, &mailboxes, &[], &[], 30, 6);
         let content: String = lines.join("\n");
         assert!(content.contains("Inbox"), "got:\n{}", content);
         assert!(content.contains("Sent"), "got:\n{}", content);
         assert!(content.contains("Drafts"), "got:\n{}", content);
-    }
-
-    #[test]
-    fn draw_sidebar_empty_mailbox_shows_title() {
-        let mut state = ListState::default();
-        let mailboxes: Vec<config::Mailbox> = vec![];
-        let lines = rendered_sidebar_lines(&mut state, &mailboxes, &[], false, 30, 4);
-        assert!(lines[0].contains("Mailbox"), "got: {:?}", lines[0]);
     }
 
     #[test]
@@ -1386,7 +1379,7 @@ mod tests {
         let mailboxes = vec![mb("Inbox", "/mail/inbox")];
         // Maildir with unread emails will show count
         let maildirs = vec![Maildir::default()];
-        let lines = rendered_sidebar_lines(&mut state, &mailboxes, &maildirs, false, 30, 6);
+        let lines = rendered_sidebar_lines(&mut state, &mailboxes, &maildirs, &[], 30, 6);
         let content: String = lines.join("\n");
         // Default Maildir has no unread, so just label shown
         assert!(content.contains("Inbox"), "got:\n{}", content);

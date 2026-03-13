@@ -197,13 +197,8 @@ pub fn draw(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, view: &mut 
         })
         .collect();
 
-    let title = match view.search() {
-        Some(q) => format!(" Threads [{}] ", q),
-        None => " Threads ".to_string(),
-    };
-
     let widget = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(title))
+        .block(Block::default().borders(Borders::NONE))
         .highlight_style(
             Style::default()
                 .bg(Color::Blue)
@@ -690,18 +685,22 @@ mod tests {
     // ── draw ─────────────────────────────────────────────────────────────────
 
     #[test]
-    fn draw_shows_threads_title() {
-        let mut view = ThreadsView::new(tlist(vec![]));
-        let lines = rendered_lines(&mut view, 60, 5);
-        assert!(lines[0].contains("Threads"), "got: {:?}", lines[0]);
+    fn draw_shows_threads_content() {
+        let mut view = ThreadsView::new(tlist(vec![thread("a", "Alice", "Hello", false)]));
+        let content: String = rendered_lines(&mut view, 60, 5).join("\n");
+        assert!(content.contains("Alice"), "got:\n{content}");
     }
 
     #[test]
-    fn draw_shows_search_in_title() {
-        let mut view = ThreadsView::new(tlist(vec![thread("a", "Alice", "Hello", false)]));
+    fn draw_shows_search_filters_results() {
+        let mut view = ThreadsView::new(tlist(vec![
+            thread("a", "Alice", "Hello", false),
+            thread("b", "Bob", "World", false),
+        ]));
         view.set_search(Some("hello"));
-        let lines = rendered_lines(&mut view, 60, 5);
-        assert!(lines[0].contains("hello"), "got: {:?}", lines[0]);
+        let content: String = rendered_lines(&mut view, 60, 5).join("\n");
+        assert!(content.contains("Alice"), "got:\n{content}");
+        assert!(!content.contains("Bob"), "got:\n{content}");
     }
 
     #[test]

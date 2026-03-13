@@ -67,25 +67,37 @@ pub trait EmailReply {
     ///
     /// The draft includes:
     /// - To: set to the original sender
-    /// - Cc: copied from the original email (if any)
+    /// - Cc: original To: + original Cc:, minus own_address
     /// - Subject: with "Re:" prefix
     /// - In-Reply-To: referencing this message
     /// - Body: optionally quoted with ">" prefix
-    fn reply_draft(&self, quote: bool) -> Result<String>;
+    fn reply_draft(&self, quote: bool, own_address: &str) -> Result<String>;
 }
 
 impl EmailReply for Email {
-    fn reply_draft(&self, quote: bool) -> Result<String> {
+    fn reply_draft(&self, quote: bool, own_address: &str) -> Result<String> {
         let msg = self.to_message()?;
-
-        // Extract Cc using Address conversion
-        let cc = format_mail_parser_addrs(msg.cc());
 
         let reply_subject = if self.subject.starts_with("Re:") || self.subject.starts_with("re:") {
             self.subject.clone()
         } else {
             format!("Re: {}", self.subject)
         };
+
+        // Cc = original To + original Cc, minus own address
+        let mut cc_addrs: Vec<Address> = collect_mail_parser_addrs(msg.to())
+            .into_iter()
+            .chain(collect_mail_parser_addrs(msg.cc()))
+            .filter(|a| a.address().to_lowercase() != own_address.to_lowercase())
+            .collect();
+        // Deduplicate by address
+        let mut seen = std::collections::HashSet::new();
+        cc_addrs.retain(|a| seen.insert(a.address().to_lowercase()));
+        let cc = cc_addrs
+            .iter()
+            .map(|a| a.full())
+            .collect::<Vec<_>>()
+            .join(", ");
 
         let mut draft = format!(
             "To: {}\nSubject: {}\nIn-Reply-To: <{}>\n",
@@ -115,8 +127,8 @@ impl EmailReply for Email {
     }
 }
 
-/// Format mail_parser addresses into a comma-separated string.
-fn format_mail_parser_addrs(addrs: Option<&mail_parser::Address<'_>>) -> String {
+/// Collect mail_parser addresses into a Vec<Address>.
+fn collect_mail_parser_addrs(addrs: Option<&mail_parser::Address<'_>>) -> Vec<Address> {
     addrs
         .map(|a| {
             a.iter()
@@ -126,9 +138,7 @@ fn format_mail_parser_addrs(addrs: Option<&mail_parser::Address<'_>>) -> String 
                         addr.address().unwrap_or_default(),
                     )
                 })
-                .map(|a| a.full())
-                .collect::<Vec<_>>()
-                .join(", ")
+                .collect()
         })
         .unwrap_or_default()
 }

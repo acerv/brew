@@ -298,10 +298,7 @@ impl Editor {
 
 /// Render the compose editor into `area`.
 pub fn draw(frame: &mut ratatui::Frame, area: Rect, editor: &mut Editor) {
-    let outer = Block::default()
-        .borders(Borders::ALL)
-        .title(" Compose ")
-        .title_style(Style::default().add_modifier(Modifier::BOLD));
+    let outer = Block::default().borders(Borders::NONE);
     let inner = outer.inner(area);
     frame.render_widget(outer, area);
 
