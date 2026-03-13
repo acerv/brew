@@ -757,15 +757,14 @@ fn draw_statusbar(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, app: 
             " j/k↑↓ move  J/K mailbox  Enter open  r reply  R reply+quote  / search  CTRL+n/p tabs  Q quit",
             Style::default().fg(Color::DarkGray),
         )];
-        if let Some(tv) = app.threads.get(app.current_mb) {
-            if let Some(q) = tv.search() {
+        if let Some(tv) = app.threads.get(app.current_mb)
+            && let Some(q) = tv.search() {
                 spans.push(Span::styled("  |  ", Style::default().fg(Color::DarkGray)));
                 spans.push(Span::styled(
                     format!("search: {q}"),
                     Style::default().fg(Color::Yellow),
                 ));
             }
-        }
         Paragraph::new(Line::from(spans))
     } else {
         Paragraph::new(" j/k scroll  J/K email  r reply  R reply+quote  CTRL+n/p tabs  q close")
