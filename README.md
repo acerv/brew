@@ -73,6 +73,7 @@ Optional files (plain text, loaded from `~/.config/brew/`):
 | `R`                   | Reply-all (quoted)                                         |
 | `C`                   | Compose new email                                          |
 | `v`                   | Toggle read / unread                                       |
+| `m`                   | Move email to another mailbox (popup picker)               |
 | `s`                   | Toggle sort order (descending / ascending)                 |
 | `N`                   | Toggle unread-only filter                                  |
 | `/`                   | Search by subject (live)                                   |
@@ -94,6 +95,7 @@ Optional files (plain text, loaded from `~/.config/brew/`):
 | `J` / `K`             | Next / previous email            |
 | `r`                   | Reply (empty body)               |
 | `R`                   | Reply (quoted)                   |
+| `m`                   | Move email to another mailbox    |
 | `D`                   | Delete email and close tab       |
 | `q`                   | Close tab                        |
 

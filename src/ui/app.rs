@@ -37,6 +37,11 @@ enum SearchMode {
     Applied,
 }
 
+enum MoveMode {
+    Off,
+    Active { selected: usize },
+}
+
 enum Tab {
     Email(Box<EmailView>),
     Compose(Box<Editor>),
@@ -53,6 +58,7 @@ pub struct App {
     current_mb: usize,
     pending_sync: Option<mpsc::Receiver<Option<String>>>,
     search: SearchMode,
+    move_mode: MoveMode,
     status_error: Option<String>,
     terminal: Option<Terminal<CrosstermBackend<io::Stdout>>>,
     address_book: AddressBook,
@@ -102,6 +108,7 @@ impl App {
             current_mb: 0,
             pending_sync: None,
             search: SearchMode::Off,
+            move_mode: MoveMode::Off,
             status_error: None,
             terminal: Some(terminal),
             address_book,
@@ -203,6 +210,11 @@ impl App {
             return true;
         }
 
+        if matches!(self.move_mode, MoveMode::Active { .. }) {
+            self.handle_move_key(key);
+            return true;
+        }
+
         if self.current_tab == 0 {
             self.handle_main_key(key)
         } else {
@@ -261,6 +273,17 @@ impl App {
             }
             KeyCode::Esc => self.reset_search(),
             KeyCode::Char('v') => self.toggle_read(),
+            KeyCode::Char('m') => {
+                if self
+                    .threads
+                    .get(self.current_mb)
+                    .and_then(|tv| tv.selected())
+                    .is_some()
+                    && self.config.mailboxes.len() > 1
+                {
+                    self.move_mode = MoveMode::Active { selected: 0 };
+                }
+            }
             KeyCode::Char('C') => self.compose(),
             KeyCode::Char('r') => self.open_reply_from_thread(false),
             KeyCode::Char('R') => self.open_reply_from_thread(true),
@@ -382,6 +405,11 @@ impl App {
             (_, KeyCode::Char('G')) => {
                 if let Some(Tab::Email(ev)) = self.tabs.get_mut(ei) {
                     ev.last_line();
+                }
+            }
+            (_, KeyCode::Char('m')) => {
+                if self.config.mailboxes.len() > 1 {
+                    self.move_mode = MoveMode::Active { selected: 0 };
                 }
             }
             (_, KeyCode::Char('D')) => self.delete_current_tab_email(),
@@ -634,6 +662,72 @@ impl App {
     fn prev_mailbox(&mut self) {
         self.current_mb = self.current_mb.saturating_sub(1);
     }
+
+    fn handle_move_key(&mut self, key: KeyEvent) {
+        let targets_count = self.config.mailboxes.len().saturating_sub(1);
+        let MoveMode::Active { ref mut selected } = self.move_mode else {
+            return;
+        };
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                *selected = (*selected + 1).min(targets_count.saturating_sub(1));
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                *selected = selected.saturating_sub(1);
+            }
+            KeyCode::Enter => {
+                let sel = *selected;
+                self.move_mode = MoveMode::Off;
+                let target_idx = self
+                    .config
+                    .mailboxes
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| *i != self.current_mb)
+                    .nth(sel)
+                    .map(|(i, _)| i);
+                if let Some(idx) = target_idx {
+                    self.move_selected_email(idx);
+                }
+            }
+            KeyCode::Esc => {
+                self.move_mode = MoveMode::Off;
+            }
+            _ => {}
+        }
+    }
+
+    fn move_selected_email(&mut self, target_mb_idx: usize) {
+        let Some(thread) = self
+            .threads
+            .get(self.current_mb)
+            .and_then(|tv| tv.selected())
+        else {
+            return;
+        };
+        let path = thread.parent.path().clone();
+        let message_id = thread.parent.message_id.clone();
+
+        let target_dir = self.maildirs[target_mb_idx].path().to_string();
+        let target_cur = std::path::Path::new(&target_dir).join("cur");
+        let Some(filename) = path.file_name() else {
+            return;
+        };
+        let dest = target_cur.join(filename);
+
+        if let Err(e) = std::fs::create_dir_all(&target_cur)
+            .and_then(|_| std::fs::copy(&path, &dest).map(|_| ()))
+        {
+            self.status_error = Some(e.to_string());
+            return;
+        }
+
+        self.maildirs[self.current_mb].remove_by_id(&message_id);
+        self.threads[self.current_mb].invalidate();
+
+        self.maildirs[target_mb_idx].sync();
+        self.threads[target_mb_idx].invalidate();
+    }
 }
 
 fn draw(frame: &mut ratatui::Frame, app: &mut App) {
@@ -684,6 +778,7 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     }
 
     draw_statusbar(frame, chunks[3], app);
+    draw_move_popup(frame, app);
 }
 
 fn draw_main(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &mut App) {
@@ -763,17 +858,17 @@ fn draw_statusbar(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, app: 
         Paragraph::new(format!(" error: {err}")).style(Style::default().fg(Color::Red))
     } else if app.current_tab == 0 {
         let mut spans = vec![Span::styled(
-            " j/k↑↓ move  J/K mailbox  Enter open  r reply  R reply+quote  / search  s sort  CTRL+n/p tabs  Q quit",
+            " j/k↑↓ move  J/K mailbox  Enter open  r reply  R reply+quote  m move  / search  s sort  CTRL+n/p tabs  Q quit",
             Style::default().fg(Color::DarkGray),
         )];
-        if let Some(md) = app.maildirs.get(app.current_mb) {
-            if md.sort_order() == SortOrder::Ascending {
-                spans.push(Span::styled("  |  ", Style::default().fg(Color::DarkGray)));
-                spans.push(Span::styled(
-                    "sort: asc",
-                    Style::default().fg(Color::Yellow),
-                ));
-            }
+        if let Some(md) = app.maildirs.get(app.current_mb)
+            && md.sort_order() == SortOrder::Ascending
+        {
+            spans.push(Span::styled("  |  ", Style::default().fg(Color::DarkGray)));
+            spans.push(Span::styled(
+                "sort: asc",
+                Style::default().fg(Color::Yellow),
+            ));
         }
         if let Some(tv) = app.threads.get(app.current_mb)
             && let Some(q) = tv.search()
@@ -786,10 +881,80 @@ fn draw_statusbar(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, app: 
         }
         Paragraph::new(Line::from(spans))
     } else {
-        Paragraph::new(" j/k scroll  J/K email  r reply  R reply+quote  CTRL+n/p tabs  q close")
-            .style(Style::default().fg(Color::DarkGray))
+        Paragraph::new(
+            " j/k scroll  J/K email  r reply  R reply+quote  m move  CTRL+n/p tabs  q close",
+        )
+        .style(Style::default().fg(Color::DarkGray))
     };
     frame.render_widget(widget, area);
+}
+
+fn draw_move_popup(frame: &mut ratatui::Frame, app: &App) {
+    use ratatui::widgets::Clear;
+
+    let MoveMode::Active { selected } = app.move_mode else {
+        return;
+    };
+
+    let targets: Vec<&config::Mailbox> = app
+        .config
+        .mailboxes
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != app.current_mb)
+        .map(|(_, mb)| mb)
+        .collect();
+
+    if targets.is_empty() {
+        return;
+    }
+
+    let max_label = targets.iter().map(|mb| mb.label.len()).max().unwrap_or(10);
+    let popup_w = (max_label as u16 + 8).clamp(22, 40);
+    let popup_h = targets.len() as u16 + 4; // borders + 2 padding lines
+
+    let area = frame.area();
+    let x = area.width.saturating_sub(popup_w) / 2;
+    let y = area.height.saturating_sub(popup_h) / 2;
+    let popup_area =
+        ratatui::layout::Rect::new(x, y, popup_w.min(area.width), popup_h.min(area.height));
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default().borders(Borders::ALL).title(Span::styled(
+        " Move to ",
+        Style::default().add_modifier(Modifier::BOLD),
+    ));
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    // Split inner: top padding, list, bottom padding
+    let inner_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    let items: Vec<ListItem> = targets
+        .iter()
+        .map(|mb| ListItem::new(format!(" {} ", mb.label)))
+        .collect();
+
+    let mut state = ListState::default();
+    state.select(Some(selected));
+
+    let list = List::new(items)
+        .highlight_style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+
+    frame.render_stateful_widget(list, inner_chunks[1], &mut state);
 }
 
 #[derive(PartialEq)]
@@ -1003,6 +1168,7 @@ mod tests {
             current_mb: 0,
             pending_sync: None,
             search: SearchMode::Off,
+            move_mode: MoveMode::Off,
             status_error: None,
             terminal: None,
             address_book: AddressBook::load(),
