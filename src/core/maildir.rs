@@ -6,6 +6,23 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+/// Sort order for the thread list.
+#[derive(Default, Debug, Clone, Copy, PartialEq)]
+pub enum SortOrder {
+    #[default]
+    Descending,
+    Ascending,
+}
+
+impl SortOrder {
+    pub fn toggle(self) -> Self {
+        match self {
+            SortOrder::Descending => SortOrder::Ascending,
+            SortOrder::Ascending => SortOrder::Descending,
+        }
+    }
+}
+
 /// Holds the thread tree built from a Maildir folder.
 ///
 /// Only headers are parsed during the scan (O(n) over the mailbox). The
@@ -70,6 +87,7 @@ pub struct Maildir {
     searching: HashMap<String, Vec<Rc<EmailThread>>>,
     lookup: HashMap<String, Rc<EmailThread>>,
     threads: EmailThreadList,
+    sort_order: SortOrder,
 }
 
 impl Maildir {
@@ -244,6 +262,17 @@ impl Maildir {
         self.invalidate();
     }
 
+    /// Set the sort order and re-sort immediately.
+    pub fn set_sort_order(&mut self, order: SortOrder) {
+        self.sort_order = order;
+        self.invalidate();
+    }
+
+    /// Return the current sort order.
+    pub fn sort_order(&self) -> SortOrder {
+        self.sort_order
+    }
+
     /// Invalidate the current tables and re-sort all the threads.
     pub fn invalidate(&mut self) {
         let mut threads = self.threads.borrow_mut();
@@ -254,8 +283,7 @@ impl Maildir {
         }
         self.searching.clear();
 
-        // Sort the full tree — root threads and all reply lists — latest first.
-        sort_threads(&mut threads);
+        sort_threads(&mut threads, self.sort_order);
     }
 
     /// Iterate over all emails inside maildir. This is used instead of the
@@ -300,15 +328,35 @@ fn collect_ids(thread: &Rc<EmailThread>, out: &mut Vec<String>) {
     }
 }
 
-/// Sort `threads` descending by timestamp (latest first), then recurse into
-/// replies. Emails with no timestamp sort after all dated ones.
-fn sort_threads(threads: &mut [Rc<EmailThread>]) {
+/// Return the most recent timestamp across `thread` and all its replies.
+/// Returns `None` if no email in the tree has a timestamp.
+fn thread_max_timestamp(thread: &Rc<EmailThread>) -> Option<i64> {
+    let mut max = thread.parent.timestamp;
+    for reply in thread.replies.borrow().iter() {
+        let t = thread_max_timestamp(reply);
+        max = match (max, t) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        };
+    }
+    max
+}
+
+/// Sort `threads` by the most recent timestamp in each thread tree, then
+/// recurse into replies. Emails with no timestamp sort after all dated ones.
+fn sort_threads(threads: &mut [Rc<EmailThread>], order: SortOrder) {
     threads.sort_unstable_by(|a, b| {
-        // None (no date) sorts last.
-        b.parent.timestamp.cmp(&a.parent.timestamp)
+        let ta = thread_max_timestamp(a);
+        let tb = thread_max_timestamp(b);
+        match order {
+            SortOrder::Descending => tb.cmp(&ta),
+            SortOrder::Ascending => ta.cmp(&tb),
+        }
     });
     for thread in threads.iter() {
-        sort_threads(&mut thread.replies.borrow_mut());
+        sort_threads(&mut thread.replies.borrow_mut(), order);
     }
 }
 
@@ -883,6 +931,144 @@ mod tests {
         let dir = make_maildir();
         let maildir = Maildir::new(dir.to_str().unwrap()).unwrap();
         assert!(maildir.write_email("").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── SortOrder ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn sort_order_default_is_descending() {
+        assert_eq!(SortOrder::default(), SortOrder::Descending);
+    }
+
+    #[test]
+    fn sort_order_toggle_descending_gives_ascending() {
+        assert_eq!(SortOrder::Descending.toggle(), SortOrder::Ascending);
+    }
+
+    #[test]
+    fn sort_order_toggle_ascending_gives_descending() {
+        assert_eq!(SortOrder::Ascending.toggle(), SortOrder::Descending);
+    }
+
+    // ── sort_threads / thread_max_timestamp ───────────────────────────────────
+
+    #[test]
+    fn descending_sort_puts_newest_thread_first() {
+        let dir = make_maildir();
+        write_msg(
+            &dir,
+            "new",
+            "older",
+            &email_content("older@test", None, "Mon, 01 Jan 2024 00:00:00 +0000"),
+        );
+        write_msg(
+            &dir,
+            "new",
+            "newer",
+            &email_content("newer@test", None, "Wed, 01 Jan 2025 00:00:00 +0000"),
+        );
+        let maildir = Maildir::new(dir.to_str().unwrap()).unwrap();
+        let threads = maildir.threads();
+        let threads = threads.borrow();
+        assert_eq!(threads[0].parent.message_id, "newer@test");
+        assert_eq!(threads[1].parent.message_id, "older@test");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ascending_sort_puts_oldest_thread_first() {
+        let dir = make_maildir();
+        write_msg(
+            &dir,
+            "new",
+            "older",
+            &email_content("older@test", None, "Mon, 01 Jan 2024 00:00:00 +0000"),
+        );
+        write_msg(
+            &dir,
+            "new",
+            "newer",
+            &email_content("newer@test", None, "Wed, 01 Jan 2025 00:00:00 +0000"),
+        );
+        let mut maildir = Maildir::new(dir.to_str().unwrap()).unwrap();
+        maildir.set_sort_order(SortOrder::Ascending);
+        let threads = maildir.threads();
+        let threads = threads.borrow();
+        assert_eq!(threads[0].parent.message_id, "older@test");
+        assert_eq!(threads[1].parent.message_id, "newer@test");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sort_uses_most_recent_reply_not_root_date() {
+        let dir = make_maildir();
+        // Root A is older, but has a very recent reply — should sort first in descending
+        write_msg(
+            &dir,
+            "new",
+            "root_a",
+            &email_content("root_a@test", None, "Mon, 01 Jan 2024 00:00:00 +0000"),
+        );
+        write_msg(
+            &dir,
+            "new",
+            "reply_a",
+            &email_content(
+                "reply_a@test",
+                Some("root_a@test"),
+                "Wed, 01 Jan 2025 00:00:00 +0000",
+            ),
+        );
+        // Root B is newer than root_a but has no replies
+        write_msg(
+            &dir,
+            "new",
+            "root_b",
+            &email_content("root_b@test", None, "Tue, 01 Jun 2024 00:00:00 +0000"),
+        );
+        let maildir = Maildir::new(dir.to_str().unwrap()).unwrap();
+        let threads = maildir.threads();
+        let threads = threads.borrow();
+        // Thread A's max timestamp (reply: 2025) > Thread B's max timestamp (root: Jun 2024)
+        assert_eq!(
+            threads[0].parent.message_id, "root_a@test",
+            "thread with newest reply must come first"
+        );
+        assert_eq!(threads[1].parent.message_id, "root_b@test");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn set_sort_order_re_sorts_existing_threads() {
+        let dir = make_maildir();
+        write_msg(
+            &dir,
+            "new",
+            "older",
+            &email_content("older@test", None, "Mon, 01 Jan 2024 00:00:00 +0000"),
+        );
+        write_msg(
+            &dir,
+            "new",
+            "newer",
+            &email_content("newer@test", None, "Wed, 01 Jan 2025 00:00:00 +0000"),
+        );
+        let mut maildir = Maildir::new(dir.to_str().unwrap()).unwrap();
+        assert_eq!(
+            maildir.threads().borrow()[0].parent.message_id,
+            "newer@test"
+        );
+        maildir.set_sort_order(SortOrder::Ascending);
+        assert_eq!(
+            maildir.threads().borrow()[0].parent.message_id,
+            "older@test"
+        );
+        maildir.set_sort_order(SortOrder::Descending);
+        assert_eq!(
+            maildir.threads().borrow()[0].parent.message_id,
+            "newer@test"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

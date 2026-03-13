@@ -6,13 +6,15 @@ A terminal email client for Maildir folders, written in Rust.
 
 - Threaded email list with tree indentation
 - Diff/patch syntax highlighting in email bodies
-- Reply composition with quoting in `$VISUAL`/`$EDITOR`
+- Reply-all composition with quoting in `$VISUAL`/`$EDITOR`
 - Compose new emails from scratch
+- Draft saving to a dedicated Drafts mailbox
 - Read/unread tracking via Maildir filename flags
 - Multiple mailboxes with sidebar
 - Tab-based email viewing
 - Live search filtering by subject
 - Unread-only filter toggle
+- Sort threads by most-recent activity (ascending / descending)
 - SMTP sending via STARTTLS
 - Periodic background sync via a configurable shell command (e.g. `mbsync`)
 
@@ -71,6 +73,7 @@ Optional files (plain text, loaded from `~/.config/brew/`):
 | `R`                   | Reply-all (quoted)                                         |
 | `C`                   | Compose new email                                          |
 | `v`                   | Toggle read / unread                                       |
+| `s`                   | Toggle sort order (descending / ascending)                 |
 | `N`                   | Toggle unread-only filter                                  |
 | `/`                   | Search by subject (live)                                   |
 | `Esc`                 | Clear search filter                                        |

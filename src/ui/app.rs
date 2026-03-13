@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@suse.com>
 use crate::core::address::{Address, AddressBook};
 use crate::core::config::{self, Config, Smtp};
-use crate::core::maildir::Maildir;
+use crate::core::maildir::{Maildir, SortOrder};
 use crate::core::thread::Email;
 use crate::ui::compose::{self, EmailReply};
 use crate::ui::editor::{self, Editor};
@@ -218,6 +218,15 @@ impl App {
             KeyCode::Char('N') => {
                 if let Some(tv) = self.threads.get_mut(self.current_mb) {
                     tv.toggle_unread();
+                }
+            }
+            KeyCode::Char('s') => {
+                let idx = self.current_mb;
+                if let Some(md) = self.maildirs.get_mut(idx) {
+                    md.set_sort_order(md.sort_order().toggle());
+                    if let Some(tv) = self.threads.get_mut(idx) {
+                        tv.invalidate();
+                    }
                 }
             }
             KeyCode::Char('J') => {
@@ -754,9 +763,18 @@ fn draw_statusbar(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, app: 
         Paragraph::new(format!(" error: {err}")).style(Style::default().fg(Color::Red))
     } else if app.current_tab == 0 {
         let mut spans = vec![Span::styled(
-            " j/k↑↓ move  J/K mailbox  Enter open  r reply  R reply+quote  / search  CTRL+n/p tabs  Q quit",
+            " j/k↑↓ move  J/K mailbox  Enter open  r reply  R reply+quote  / search  s sort  CTRL+n/p tabs  Q quit",
             Style::default().fg(Color::DarkGray),
         )];
+        if let Some(md) = app.maildirs.get(app.current_mb) {
+            if md.sort_order() == SortOrder::Ascending {
+                spans.push(Span::styled("  |  ", Style::default().fg(Color::DarkGray)));
+                spans.push(Span::styled(
+                    "sort: asc",
+                    Style::default().fg(Color::Yellow),
+                ));
+            }
+        }
         if let Some(tv) = app.threads.get(app.current_mb)
             && let Some(q) = tv.search()
         {
