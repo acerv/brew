@@ -28,7 +28,7 @@ use std::io;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-const POLLING_TIME: u64 = 30;
+const POLLING_TIME: u64 = 5;
 
 enum SearchMode {
     Off,
