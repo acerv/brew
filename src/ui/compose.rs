@@ -109,12 +109,16 @@ pub fn compose_draft() -> String {
 /// re-opened in the compose editor.
 pub fn email_to_draft(email: &Email) -> Result<String> {
     let msg = email.to_message()?;
-    let to = collect_mail_parser_addrs(msg.to())
+    let parse_addrs = |a: Option<&mail_parser::Address<'_>>| -> Vec<Address> {
+        a.map(|a| a.iter().map(Address::from).collect())
+            .unwrap_or_default()
+    };
+    let to = parse_addrs(msg.to())
         .iter()
         .map(|a| a.full())
         .collect::<Vec<_>>()
         .join(", ");
-    let cc = collect_mail_parser_addrs(msg.cc())
+    let cc = parse_addrs(msg.cc())
         .iter()
         .map(|a| a.full())
         .collect::<Vec<_>>()
@@ -188,9 +192,13 @@ impl EmailReply for Email {
         };
 
         // Cc = original To + original Cc, minus own address
-        let mut cc_addrs: Vec<Address> = collect_mail_parser_addrs(msg.to())
+        let parse_addrs = |a: Option<&mail_parser::Address<'_>>| -> Vec<Address> {
+            a.map(|a| a.iter().map(Address::from).collect())
+                .unwrap_or_default()
+        };
+        let mut cc_addrs: Vec<Address> = parse_addrs(msg.to())
             .into_iter()
-            .chain(collect_mail_parser_addrs(msg.cc()))
+            .chain(parse_addrs(msg.cc()))
             .filter(|a| a.address().to_lowercase() != own_address.to_lowercase())
             .collect();
         // Deduplicate by address
@@ -228,22 +236,6 @@ impl EmailReply for Email {
 
         Ok(draft)
     }
-}
-
-/// Collect mail_parser addresses into a Vec<Address>.
-fn collect_mail_parser_addrs(addrs: Option<&mail_parser::Address<'_>>) -> Vec<Address> {
-    addrs
-        .map(|a| {
-            a.iter()
-                .map(|addr| {
-                    Address::new(
-                        addr.name().unwrap_or_default(),
-                        addr.address().unwrap_or_default(),
-                    )
-                })
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 #[cfg(test)]

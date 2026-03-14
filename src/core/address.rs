@@ -47,6 +47,15 @@ impl Address {
     }
 }
 
+impl<'a> From<&'a mail_parser::Addr<'a>> for Address {
+    fn from(addr: &'a mail_parser::Addr<'a>) -> Self {
+        Address::new(
+            addr.name().unwrap_or_default(),
+            addr.address().unwrap_or_default(),
+        )
+    }
+}
+
 impl std::fmt::Display for Address {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.full())
@@ -402,5 +411,64 @@ mod tests {
         let mut book = temp_book("");
         book.harvest(&[Address::default()]);
         assert!(book.entries.is_empty());
+    }
+
+    // ── From<&mail_parser::Addr> ─────────────────────────────────────────────
+
+    fn parse_msg(raw: &str) -> mail_parser::Message<'static> {
+        mail_parser::MessageParser::default()
+            .parse(raw.as_bytes())
+            .unwrap()
+            .into_owned()
+    }
+
+    #[test]
+    fn from_mail_parser_addr_with_name() {
+        let raw = "From: Alice <alice@x.com>\r\nTo: Bob <bob@x.com>\r\n\r\n";
+        let msg = parse_msg(raw);
+        let addrs: Vec<Address> = msg
+            .to()
+            .map(|a| a.iter().map(Address::from).collect())
+            .unwrap_or_default();
+        assert_eq!(addrs.len(), 1);
+        assert_eq!(addrs[0].address(), "bob@x.com");
+        assert_eq!(addrs[0].full(), "Bob <bob@x.com>");
+    }
+
+    #[test]
+    fn from_mail_parser_addr_bare_address() {
+        let raw = "From: alice@x.com\r\nTo: bob@x.com\r\n\r\n";
+        let msg = parse_msg(raw);
+        let addrs: Vec<Address> = msg
+            .to()
+            .map(|a| a.iter().map(Address::from).collect())
+            .unwrap_or_default();
+        assert_eq!(addrs.len(), 1);
+        assert_eq!(addrs[0].address(), "bob@x.com");
+        assert_eq!(addrs[0].full(), "bob@x.com");
+    }
+
+    #[test]
+    fn from_mail_parser_addr_multiple_recipients() {
+        let raw = "From: a@x.com\r\nTo: Alice <alice@x.com>, bob@x.com\r\n\r\n";
+        let msg = parse_msg(raw);
+        let addrs: Vec<Address> = msg
+            .to()
+            .map(|a| a.iter().map(Address::from).collect())
+            .unwrap_or_default();
+        assert_eq!(addrs.len(), 2);
+        assert_eq!(addrs[0].address(), "alice@x.com");
+        assert_eq!(addrs[1].address(), "bob@x.com");
+    }
+
+    #[test]
+    fn from_mail_parser_addr_none_yields_empty() {
+        let raw = "From: a@x.com\r\n\r\n";
+        let msg = parse_msg(raw);
+        let addrs: Vec<Address> = msg
+            .to()
+            .map(|a| a.iter().map(Address::from).collect())
+            .unwrap_or_default();
+        assert!(addrs.is_empty());
     }
 }
