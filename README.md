@@ -40,7 +40,7 @@ path  = "/home/you/Mail/Work/"
 
 # Optional: a mailbox labelled "Drafts" is treated specially.
 # Pressing Enter on a draft reopens it in the editor.
-# The send dialog offers [d] to save there.
+# The send dialog offers a "Save as draft" option.
 [[mailbox]]
 label = "Drafts"
 path  = "/home/you/Mail/Drafts/"
@@ -65,6 +65,8 @@ Optional files (plain text, loaded from `~/.config/brew/`):
 | Key                   | Action                                                     |
 | --------------------- | ---------------------------------------------------------- |
 | `j` / `k` / `↑` / `↓` | Move down / up                                             |
+| `Ctrl+D` / `PageDown` | Jump 15 emails down                                        |
+| `Ctrl+U` / `PageUp`   | Jump 15 emails up                                          |
 | `g`                   | Jump to first email                                        |
 | `G`                   | Jump to last email                                         |
 | `J` / `K`             | Next / previous mailbox                                    |
