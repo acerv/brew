@@ -135,12 +135,30 @@ impl App {
             if let Some(ref rx) = self.pending_sync {
                 match rx.try_recv() {
                     Ok(None) => {
-                        // Success
+                        // Success — snapshot counts before syncing
+                        let counts_before: Vec<usize> =
+                            self.maildirs.iter().map(|md| md.email_count()).collect();
                         for maildir in &mut self.maildirs {
                             maildir.sync();
                         }
                         for tv in &mut self.threads {
                             tv.invalidate();
+                        }
+                        // Notify per mailbox if new emails arrived
+                        for (i, md) in self.maildirs.iter().enumerate() {
+                            let new_total = md.email_count();
+                            let diff = new_total.saturating_sub(counts_before[i]);
+                            if diff > 0 {
+                                let label = &self.config.mailboxes[i].label;
+                                let body = format!(
+                                    "{diff} new email{} in {label}",
+                                    if diff == 1 { "" } else { "s" }
+                                );
+                                let _ = notify_rust::Notification::new()
+                                    .summary("brew")
+                                    .body(&body)
+                                    .show();
+                            }
                         }
                         self.status_error = None;
                         self.pending_sync = None;

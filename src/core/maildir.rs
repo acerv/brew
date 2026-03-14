@@ -190,6 +190,11 @@ impl Maildir {
         Ok(())
     }
 
+    /// Total number of emails tracked in this mailbox.
+    pub fn email_count(&self) -> usize {
+        self.lookup.len()
+    }
+
     /// Count the number of unread emails across all threads in this mailbox.
     pub fn unread_count(&self) -> usize {
         self.lookup
