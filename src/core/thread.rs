@@ -13,6 +13,8 @@ pub enum Flag {
     Replied,
     /// `P` — Passed (forwarded).
     Passed,
+    /// `F` — Flagged (starred).
+    Flagged,
 }
 
 impl Flag {
@@ -24,6 +26,7 @@ impl Flag {
             Flag::Seen => Some('S'),
             Flag::Replied => Some('R'),
             Flag::Passed => Some('P'),
+            Flag::Flagged => Some('F'),
         }
     }
 }
@@ -779,6 +782,62 @@ mod tests {
     #[test]
     fn has_mark_passed_false_when_absent() {
         assert!(!make_email(PathBuf::from("/mb/cur/msg:2,S")).has_mark(Flag::Passed));
+    }
+
+    // ── mark / clear_mark / has_mark (Flagged) ───────────────────────────────
+
+    #[test]
+    fn has_mark_flagged_true_when_present() {
+        assert!(make_email(PathBuf::from("/mb/cur/msg:2,FS")).has_mark(Flag::Flagged));
+    }
+
+    #[test]
+    fn has_mark_flagged_false_when_absent() {
+        assert!(!make_email(PathBuf::from("/mb/cur/msg:2,S")).has_mark(Flag::Flagged));
+    }
+
+    #[test]
+    fn mark_flagged_adds_f_flag() {
+        let dir = temp_dir();
+        let path = dir.join("cur").join("msg1:2,S");
+        write_file(
+            &path,
+            &minimal_email("id@test", None, "test@example.com", "Test"),
+        );
+        let email = Email::from_file(&path).unwrap();
+        email.mark(Flag::Flagged);
+        let name = email
+            .path()
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(name, "msg1:2,FS");
+        assert!(email.has_mark(Flag::Flagged));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clear_mark_flagged_removes_f_flag() {
+        let dir = temp_dir();
+        let path = dir.join("cur").join("msg1:2,FS");
+        write_file(
+            &path,
+            &minimal_email("id@test", None, "test@example.com", "Test"),
+        );
+        let email = Email::from_file(&path).unwrap();
+        email.clear_mark(Flag::Flagged);
+        let name = email
+            .path()
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(name, "msg1:2,S");
+        assert!(!email.has_mark(Flag::Flagged));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ── has_mark (Unseen) ─────────────────────────────────────────────────────

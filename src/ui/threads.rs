@@ -155,7 +155,7 @@ impl ThreadsView {
 pub fn draw(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, view: &mut ThreadsView) {
     const FROM_W: usize = 27;
     const DATE_W: usize = 16;
-    const FLAGS_W: usize = 3; // "↩→ " / "↩  " / " → " / "   "
+    const FLAGS_W: usize = 4; // "★↩→ " etc.
     let usable = area.width.saturating_sub(2) as usize;
     let subject_w = usable.saturating_sub(FROM_W + DATE_W + FLAGS_W + 2);
 
@@ -184,6 +184,11 @@ pub fn draw(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, view: &mut 
             } else {
                 Style::default()
             };
+            let flagged_span = if e.has_mark(Flag::Flagged) {
+                Span::styled("★", Style::default().fg(Color::Yellow))
+            } else {
+                Span::raw(" ")
+            };
             let replied_span = if e.has_mark(Flag::Replied) {
                 Span::styled("↩", Style::default().fg(Color::Yellow))
             } else {
@@ -200,6 +205,7 @@ pub fn draw(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, view: &mut 
                 Span::styled(indent, Style::default().fg(Color::DarkGray)),
                 Span::styled(subject_padded, text_style),
                 Span::raw(" "),
+                flagged_span,
                 replied_span,
                 passed_span,
                 Span::styled(
@@ -836,6 +842,21 @@ mod tests {
     }
 
     #[test]
+    fn draw_shows_flagged_indicator() {
+        let email = make_email_with_flags("a", "FS");
+        let t = Rc::new(EmailThread {
+            parent: email,
+            replies: RefCell::new(vec![]),
+        });
+        let mut view = ThreadsView::new(tlist(vec![t]));
+        let content: String = rendered_lines(&mut view, 80, 3).join("\n");
+        assert!(
+            content.contains('★'),
+            "flagged indicator missing:\n{content}"
+        );
+    }
+
+    #[test]
     fn draw_shows_no_indicators_for_plain_email() {
         let mut view = ThreadsView::new(tlist(vec![thread("a", "Alice", "Hello", false)]));
         let content: String = rendered_lines(&mut view, 80, 3).join("\n");
@@ -846,6 +867,10 @@ mod tests {
         assert!(
             !content.contains('→'),
             "unexpected passed indicator:\n{content}"
+        );
+        assert!(
+            !content.contains('★'),
+            "unexpected flagged indicator:\n{content}"
         );
     }
 }

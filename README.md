@@ -76,6 +76,7 @@ Optional files (plain text, loaded from `~/.config/brew/`):
 | `f`                   | Forward email                                              |
 | `C`                   | Compose new email                                          |
 | `v`                   | Toggle read / unread                                       |
+| `Space`               | Toggle flagged (★)                                         |
 | `m`                   | Move email to another mailbox (popup picker)               |
 | `s`                   | Toggle sort order (descending / ascending)                 |
 | `N`                   | Toggle unread-only filter                                  |

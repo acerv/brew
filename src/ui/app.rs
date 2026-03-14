@@ -260,6 +260,7 @@ impl App {
         match (key.modifiers, key.code) {
             (_, KeyCode::Char('Q')) => return false,
             (KeyModifiers::CONTROL, KeyCode::Char('s')) => self.trigger_sync(),
+            (_, KeyCode::Char(' ')) => self.toggle_flagged_thread(),
             (_, KeyCode::Char('D')) => self.delete_selected_thread(),
             (_, KeyCode::Char('N')) => {
                 if let Some(tv) = self.threads.get_mut(self.current_mb) {
@@ -566,6 +567,21 @@ impl App {
             thread.parent.mark(Flag::Seen);
         } else {
             thread.parent.mark(Flag::Unseen);
+        }
+    }
+
+    fn toggle_flagged_thread(&mut self) {
+        let Some(thread) = self
+            .threads
+            .get(self.current_mb)
+            .and_then(|tv| tv.selected())
+        else {
+            return;
+        };
+        if thread.parent.has_mark(Flag::Flagged) {
+            thread.parent.clear_mark(Flag::Flagged);
+        } else {
+            thread.parent.mark(Flag::Flagged);
         }
     }
 
