@@ -16,85 +16,84 @@ pub struct Draft {
     pub body: String,
 }
 
-/// Parse an edited draft string into structured fields.
-pub fn parse_draft(edited: &str) -> Draft {
-    let mut to = Vec::new();
-    let mut cc = Vec::new();
-    let mut subject = String::new();
-    let mut in_reply_to = None;
+impl Draft {
+    /// Parse an edited draft string into structured fields.
+    pub fn parse(edited: &str) -> Self {
+        let mut to = Vec::new();
+        let mut cc = Vec::new();
+        let mut subject = String::new();
+        let mut in_reply_to = None;
 
-    for line in edited.lines().take_while(|l| *l != BODY_SENTINEL) {
-        if let Some(val) = line.strip_prefix("To:") {
-            to = address::split_addresses(val);
-        } else if let Some(val) = line.strip_prefix("Cc:") {
-            cc = address::split_addresses(val);
-        } else if let Some(val) = line.strip_prefix("Subject:") {
-            subject = val.trim().to_string();
-        } else if let Some(val) = line.strip_prefix("In-Reply-To:") {
-            in_reply_to = Some(val.trim().to_string());
+        for line in edited.lines().take_while(|l| *l != BODY_SENTINEL) {
+            if let Some(val) = line.strip_prefix("To:") {
+                to = address::split_addresses(val);
+            } else if let Some(val) = line.strip_prefix("Cc:") {
+                cc = address::split_addresses(val);
+            } else if let Some(val) = line.strip_prefix("Subject:") {
+                subject = val.trim().to_string();
+            } else if let Some(val) = line.strip_prefix("In-Reply-To:") {
+                in_reply_to = Some(val.trim().to_string());
+            }
+        }
+
+        let body = edited
+            .lines()
+            .enumerate()
+            .find(|(_, l)| *l == BODY_SENTINEL)
+            .map(|(i, _)| edited.lines().skip(i + 1).collect::<Vec<_>>().join("\n"))
+            .unwrap_or_default();
+        let body = body.trim_start_matches('\n').to_string();
+
+        Self {
+            to,
+            cc,
+            subject,
+            in_reply_to,
+            body,
         }
     }
 
-    let body = edited
-        .lines()
-        .enumerate()
-        .find(|(_, l)| *l == BODY_SENTINEL)
-        .map(|(i, _)| edited.lines().skip(i + 1).collect::<Vec<_>>().join("\n"))
-        .unwrap_or_default();
-    let body = body.trim_start_matches('\n').to_string();
-
-    Draft {
-        to,
-        cc,
-        subject,
-        in_reply_to,
-        body,
+    /// Convert this draft into a minimal RFC 2822 email string suitable for
+    /// writing into a maildir folder via `Maildir::write_email`.
+    pub fn to_rfc2822(&self, from: &str) -> String {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let pid = std::process::id();
+        let message_id = format!("{timestamp}.{pid}.localhost");
+        let mut email = format!("Message-ID: <{message_id}>\r\n");
+        email.push_str(&format!("From: {from}\r\n"));
+        if !self.to.is_empty() {
+            email.push_str(&format!(
+                "To: {}\r\n",
+                self.to
+                    .iter()
+                    .map(|a| a.full())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if !self.cc.is_empty() {
+            email.push_str(&format!(
+                "Cc: {}\r\n",
+                self.cc
+                    .iter()
+                    .map(|a| a.full())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if let Some(irt) = &self.in_reply_to {
+            email.push_str(&format!("In-Reply-To: {irt}\r\n"));
+        }
+        email.push_str(&format!("Subject: {}\r\n", self.subject));
+        email.push_str("MIME-Version: 1.0\r\n");
+        email.push_str("Content-Type: text/plain; charset=utf-8\r\n");
+        email.push_str("\r\n");
+        email.push_str(&self.body.replace('\n', "\r\n"));
+        email
     }
-}
-
-/// Convert a draft text into a minimal RFC 2822 email string suitable for
-/// writing into a maildir folder via `Maildir::write_email`.
-pub fn draft_to_rfc2822(draft_text: &str, from: &str) -> String {
-    let draft = parse_draft(draft_text);
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let pid = std::process::id();
-    let message_id = format!("{timestamp}.{pid}.localhost");
-    let mut email = format!("Message-ID: <{message_id}>\r\n");
-    email.push_str(&format!("From: {from}\r\n"));
-    if !draft.to.is_empty() {
-        email.push_str(&format!(
-            "To: {}\r\n",
-            draft
-                .to
-                .iter()
-                .map(|a| a.full())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-    }
-    if !draft.cc.is_empty() {
-        email.push_str(&format!(
-            "Cc: {}\r\n",
-            draft
-                .cc
-                .iter()
-                .map(|a| a.full())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-    }
-    if let Some(irt) = &draft.in_reply_to {
-        email.push_str(&format!("In-Reply-To: {irt}\r\n"));
-    }
-    email.push_str(&format!("Subject: {}\r\n", draft.subject));
-    email.push_str("MIME-Version: 1.0\r\n");
-    email.push_str("Content-Type: text/plain; charset=utf-8\r\n");
-    email.push_str("\r\n");
-    email.push_str(&draft.body.replace('\n', "\r\n"));
-    email
 }
 
 /// Generate a compose draft for a new email from scratch.
@@ -256,7 +255,7 @@ mod tests {
     #[test]
     fn parse_draft_extracts_all_fields() {
         let text = "To: alice@x.com\nCc: bob@x.com\nSubject: Hello\nIn-Reply-To: <123>\n--- body ---\nHi there";
-        let d = parse_draft(text);
+        let d = Draft::parse(text);
         assert_eq!(d.to.len(), 1);
         assert_eq!(d.to[0].address(), "alice@x.com");
         assert_eq!(d.cc.len(), 1);
@@ -269,35 +268,35 @@ mod tests {
     #[test]
     fn parse_draft_multiple_to() {
         let text = "To: a@x.com, b@x.com\nSubject: Hi\n--- body ---\n";
-        let d = parse_draft(text);
+        let d = Draft::parse(text);
         assert_eq!(d.to.len(), 2);
     }
 
     #[test]
     fn parse_draft_no_in_reply_to() {
         let text = "To: a@x.com\nSubject: Hi\n--- body ---\nBody";
-        let d = parse_draft(text);
+        let d = Draft::parse(text);
         assert!(d.in_reply_to.is_none());
     }
 
     #[test]
     fn parse_draft_empty_body() {
         let text = "To: a@x.com\nSubject: Hi\n--- body ---\n";
-        let d = parse_draft(text);
+        let d = Draft::parse(text);
         assert!(d.body.is_empty());
     }
 
     #[test]
     fn parse_draft_no_sentinel() {
         let text = "To: a@x.com\nSubject: Hi\n";
-        let d = parse_draft(text);
+        let d = Draft::parse(text);
         assert!(d.body.is_empty());
     }
 
     #[test]
     fn parse_draft_multiline_body() {
         let text = "To: a@x.com\nSubject: Hi\n--- body ---\nLine 1\nLine 2\nLine 3";
-        let d = parse_draft(text);
+        let d = Draft::parse(text);
         assert_eq!(d.body, "Line 1\nLine 2\nLine 3");
     }
 
@@ -314,7 +313,7 @@ mod tests {
     #[test]
     fn compose_draft_roundtrips() {
         let draft = compose_draft();
-        let d = parse_draft(&draft);
+        let d = Draft::parse(&draft);
         assert!(d.to.is_empty());
         assert!(d.subject.is_empty());
         assert!(d.in_reply_to.is_none());
@@ -325,14 +324,14 @@ mod tests {
     #[test]
     fn draft_to_rfc2822_contains_message_id() {
         let text = "To: alice@x.com\nSubject: Hi\n--- body ---\nHello";
-        let rfc = draft_to_rfc2822(text, "me@x.com");
+        let rfc = Draft::parse(text).to_rfc2822("me@x.com");
         assert!(rfc.contains("Message-ID:"), "got: {rfc}");
     }
 
     #[test]
     fn draft_to_rfc2822_contains_required_headers() {
         let text = "To: alice@x.com\nCc: bob@x.com\nSubject: Hi\n--- body ---\nHello";
-        let rfc = draft_to_rfc2822(text, "Me <me@x.com>");
+        let rfc = Draft::parse(text).to_rfc2822("Me <me@x.com>");
         assert!(rfc.contains("From: Me <me@x.com>"), "got: {rfc}");
         assert!(rfc.contains("To: alice@x.com"), "got: {rfc}");
         assert!(rfc.contains("Cc: bob@x.com"), "got: {rfc}");
@@ -342,14 +341,14 @@ mod tests {
     #[test]
     fn draft_to_rfc2822_contains_body() {
         let text = "To: alice@x.com\nSubject: Hi\n--- body ---\nHello world";
-        let rfc = draft_to_rfc2822(text, "me@x.com");
+        let rfc = Draft::parse(text).to_rfc2822("me@x.com");
         assert!(rfc.contains("Hello world"), "got: {rfc}");
     }
 
     #[test]
     fn draft_to_rfc2822_includes_in_reply_to() {
         let text = "To: alice@x.com\nSubject: Re: Hi\nIn-Reply-To: <abc@x.com>\n--- body ---\n";
-        let rfc = draft_to_rfc2822(text, "me@x.com");
+        let rfc = Draft::parse(text).to_rfc2822("me@x.com");
         assert!(rfc.contains("In-Reply-To: <abc@x.com>"), "got: {rfc}");
     }
 
@@ -402,7 +401,7 @@ mod tests {
     #[test]
     fn email_to_draft_roundtrips_via_rfc2822() {
         let original = "To: alice@x.com\nSubject: Test\n--- body ---\nHi there";
-        let rfc = draft_to_rfc2822(original, "me@x.com");
+        let rfc = Draft::parse(original).to_rfc2822("me@x.com");
         let path = write_tmp_email(&rfc);
         let email = crate::core::thread::Email::from_file(&path).unwrap();
         let draft = email_to_draft(&email).unwrap();

@@ -394,7 +394,7 @@ impl App {
 
         match action {
             SendAction::Sent => {
-                let draft = compose::parse_draft(&text);
+                let draft = compose::Draft::parse(&text);
                 let mut addrs = draft.to.clone();
                 addrs.extend(draft.cc.clone());
                 self.address_book.harvest(&addrs);
@@ -426,7 +426,7 @@ impl App {
                         self.config.smtp.name.as_deref().unwrap_or(""),
                         &self.config.smtp.username,
                     );
-                    let content = compose::draft_to_rfc2822(&text, &from.full());
+                    let content = compose::Draft::parse(&text).to_rfc2822(&from.full());
                     if let Some(md) = self.maildirs.get_mut(idx) {
                         if let Err(e) = md.write_email(&content) {
                             self.status_error = Some(e.to_string());
