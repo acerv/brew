@@ -3,7 +3,7 @@
 use crate::core::address::{Address, AddressBook};
 use crate::core::config::{self, Config, Smtp};
 use crate::core::maildir::{Maildir, SortOrder};
-use crate::core::thread::Email;
+use crate::core::thread::{Email, Flag};
 use crate::ui::compose::{self, EmailReply};
 use crate::ui::editor::{self, Editor};
 use crate::ui::email::{self, EmailView};
@@ -395,6 +395,14 @@ impl App {
                     )
                 {
                     self.status_error = Some(e.to_string());
+                } else if let Some(irt) = draft.in_reply_to.as_deref() {
+                    // Mark the original email as replied.
+                    for md in &self.maildirs {
+                        if let Some(thread) = md.find_by_id(irt) {
+                            thread.parent.mark(Flag::Replied);
+                            break;
+                        }
+                    }
                 }
             }
             SendAction::SaveDraft => {
@@ -540,9 +548,9 @@ impl App {
             return;
         };
         if thread.parent.is_unread() {
-            thread.parent.mark_as_read();
+            thread.parent.mark(Flag::Seen);
         } else {
-            thread.parent.mark_as_unread();
+            thread.parent.mark(Flag::Unseen);
         }
     }
 
@@ -623,7 +631,7 @@ impl App {
                 Err(e) => self.status_error = Some(e.to_string()),
             }
         } else {
-            thread.parent.mark_as_read();
+            thread.parent.mark(Flag::Seen);
             self.open_email(&thread.parent);
         }
     }

@@ -190,6 +190,11 @@ impl Maildir {
         Ok(())
     }
 
+    /// Look up a thread by its root message-id. Returns `None` if not found.
+    pub fn find_by_id(&self, message_id: &str) -> Option<&Rc<EmailThread>> {
+        self.lookup.get(message_id)
+    }
+
     /// Total number of emails tracked in this mailbox.
     pub fn email_count(&self) -> usize {
         self.lookup.len()
@@ -936,6 +941,46 @@ mod tests {
         let dir = make_maildir();
         let maildir = Maildir::new(dir.to_str().unwrap()).unwrap();
         assert!(maildir.write_email("").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── Maildir::find_by_id ────────────────────────────────────────────────────
+
+    #[test]
+    fn find_by_id_returns_thread_for_known_id() {
+        let dir = make_maildir();
+        write_msg(
+            &dir,
+            "new",
+            "msg1",
+            &email_content("find@test", None, "Mon, 01 Jan 2024 00:00:00 +0000"),
+        );
+        let maildir = Maildir::new(dir.to_str().unwrap()).unwrap();
+        let result = maildir.find_by_id("find@test");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().parent.message_id, "find@test");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn find_by_id_returns_none_for_unknown_id() {
+        let dir = make_maildir();
+        write_msg(
+            &dir,
+            "new",
+            "msg1",
+            &email_content("exists@test", None, "Mon, 01 Jan 2024 00:00:00 +0000"),
+        );
+        let maildir = Maildir::new(dir.to_str().unwrap()).unwrap();
+        assert!(maildir.find_by_id("ghost@test").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn find_by_id_returns_none_on_empty_maildir() {
+        let dir = make_maildir();
+        let maildir = Maildir::new(dir.to_str().unwrap()).unwrap();
+        assert!(maildir.find_by_id("any@test").is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

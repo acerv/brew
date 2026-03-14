@@ -1,6 +1,32 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@suse.com>
 use crate::core::address::Address;
+
+/// A Maildir flag that can be set, queried, or cleared on an email file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Flag {
+    /// Default state — absence of the `S` flag (unread).
+    Unseen,
+    /// `S` — Seen (read).
+    Seen,
+    /// `R` — Answered (replied).
+    Replied,
+    /// `P` — Passed (forwarded).
+    Passed,
+}
+
+impl Flag {
+    /// The Maildir character for this flag, or `None` for `Unseen`
+    /// (which is represented by the absence of `S`).
+    fn char(self) -> Option<char> {
+        match self {
+            Flag::Unseen => None,
+            Flag::Seen => Some('S'),
+            Flag::Replied => Some('R'),
+            Flag::Passed => Some('P'),
+        }
+    }
+}
 use anyhow::{Context, Result};
 use mail_parser::{Message, MessageParser};
 use std::cell::{Ref, RefCell};
@@ -72,54 +98,43 @@ impl Email {
         self.path.borrow()
     }
 
-    /// Returns `true` when email should be considered unread.
-    pub fn is_unread(&self) -> bool {
-        let path = self.path();
-
-        // Files sitting in a `new/` directory are always unread.
-        if path.components().any(|c| c.as_os_str() == "new") {
-            return true;
-        }
-
-        // For files in `cur/`, parse the info field from the filename.
-        // Maildir info starts after the last `:` in the filename.
-        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-
-        // Find the `:2,` flags section.
-        if let Some(info_start) = name.rfind(':') {
-            let info = &name[info_start + 1..];
-            // Standard info field starts with "2,"; if not present treat as unread.
-            if let Some(flags) = info.strip_prefix("2,") {
-                return !flags.contains('S');
+    /// Returns `true` when this email carries `flag`.
+    ///
+    /// `Flag::Unseen` returns `true` when the email is unread — either because
+    /// it sits in `new/` or because the `S` flag is absent in `cur/`.
+    /// All other flags check the `:2,flags` section of the filename directly.
+    pub fn has_mark(&self, flag: Flag) -> bool {
+        if flag == Flag::Unseen {
+            // new/ is always unread; cur/ is unread when S is absent.
+            if self.path().components().any(|c| c.as_os_str() == "new") {
+                return true;
             }
+            return !self.has_mark(Flag::Seen);
         }
 
-        // No flags info — conservative: treat as unread.
-        true
-    }
-
-    /// Convert the current `Email` into `Message<'static>`.
-    pub fn to_message(&self) -> Result<Message<'static>> {
         let path = self.path();
-        let bytes = fs::read(&*path)
-            .with_context(|| format!("failed to read mail file: {}", path.display()))?;
-
-        MessageParser::default()
-            .parse(&bytes)
-            .map(|m| m.into_owned())
-            .with_context(|| format!("failed to parse mail file: {}", path.display()))
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if let Some(pos) = name.rfind(':')
+            && let Some(flags) = name[pos + 1..].strip_prefix("2,")
+            && let Some(ch) = flag.char()
+        {
+            return flags.contains(ch);
+        }
+        false
     }
 
-    /// Rename the Maildir file to set the Seen (`S`) flag, updating `path`.
+    /// Set `flag` on this email, renaming the file on disk.
     ///
-    /// - Files in `new/` are moved to `cur/` with `:2,S` appended.
-    /// - Files in `cur/` without the `S` flag have it inserted in alphabetical
-    ///   order among existing flags.
-    /// - Already-seen files are left untouched.
-    ///
+    /// `Flag::Unseen` clears the `S` flag (marks the email as unread).
     /// Errors are silently ignored — a failed rename just means the status
     /// won't be synced back to the server, which is not fatal.
-    pub fn mark_as_read(&self) {
+    pub fn mark(&self, flag: Flag) {
+        if flag == Flag::Unseen {
+            self.clear_mark(Flag::Seen);
+            return;
+        }
+        let Some(ch) = flag.char() else { return };
+
         let path = self.path().clone();
         let name = match path.file_name().and_then(|n| n.to_str()) {
             Some(n) => n.to_owned(),
@@ -131,38 +146,29 @@ impl Email {
         };
 
         let new_name = if path.components().any(|c| c.as_os_str() == "new") {
-            // Move from new/ to cur/ and add :2,S
-            format!("{}:2,S", name)
-        } else {
-            // Already in cur/ — patch the flags field
-            if let Some(colon) = name.rfind(':') {
-                let base = &name[..colon];
-                let info = &name[colon + 1..];
-                if let Some(flags) = info.strip_prefix("2,") {
-                    if flags.contains('S') {
-                        return; // already seen
-                    }
-                    // Insert S in alphabetical order among existing flags
-                    let mut chars: Vec<char> = flags.chars().collect();
-                    chars.push('S');
-                    chars.sort_unstable();
-                    let new_flags: String = chars.into_iter().collect();
-                    format!("{}:2,{}", base, new_flags)
-                } else {
-                    // Unrecognised info format — append :2,S fresh
-                    format!("{}:2,S", name)
+            format!("{}:2,{}", name, ch)
+        } else if let Some(colon) = name.rfind(':') {
+            let base = &name[..colon];
+            let info = &name[colon + 1..];
+            if let Some(flags) = info.strip_prefix("2,") {
+                if flags.contains(ch) {
+                    return; // already set
                 }
+                let mut chars: Vec<char> = flags.chars().collect();
+                chars.push(ch);
+                chars.sort_unstable();
+                format!("{}:2,{}", base, chars.into_iter().collect::<String>())
             } else {
-                // No flags at all
-                format!("{}:2,S", name)
+                format!("{}:2,{}", name, ch)
             }
+        } else {
+            format!("{}:2,{}", name, ch)
         };
 
         if new_name == name {
             return;
         }
 
-        // Build destination path: always in cur/
         let cur_dir = if path.components().any(|c| c.as_os_str() == "new") {
             dir.parent().unwrap_or(dir).join("cur")
         } else {
@@ -175,18 +181,20 @@ impl Email {
         }
     }
 
-    /// Rename the Maildir file to clear the Seen (`S`) flag, updating `path`.
+    /// Clear `flag` from this email, renaming the file on disk.
     ///
-    /// - Files in `new/` are already unread; this is a no-op.
-    /// - Files in `cur/` without the `S` flag are already unread; no-op.
-    /// - Files in `cur/` with the `S` flag have it removed from their flags.
-    ///
-    /// Errors are silently ignored — a failed rename just means the status
-    /// won't be synced back to the server, which is not fatal.
-    pub fn mark_as_unread(&self) {
+    /// `Flag::Unseen` sets the `S` flag (marks the email as read).
+    /// Errors are silently ignored.
+    pub fn clear_mark(&self, flag: Flag) {
+        if flag == Flag::Unseen {
+            self.mark(Flag::Seen);
+            return;
+        }
+        let Some(ch) = flag.char() else { return };
+
         let path = self.path().clone();
 
-        // Files in new/ are always unread.
+        // Files in new/ have no flags to clear.
         if path.components().any(|c| c.as_os_str() == "new") {
             return;
         }
@@ -204,27 +212,43 @@ impl Email {
             let base = &name[..colon];
             let info = &name[colon + 1..];
             if let Some(flags) = info.strip_prefix("2,") {
-                if !flags.contains('S') {
-                    return; // already unread
+                if !flags.contains(ch) {
+                    return; // already absent
                 }
-                // Remove S, keeping other flags in their existing order
-                let new_flags: String = flags.chars().filter(|&c| c != 'S').collect();
+                let new_flags: String = flags.chars().filter(|&c| c != ch).collect();
                 format!("{}:2,{}", base, new_flags)
             } else {
-                return; // unrecognised info format — treat as unread
+                return;
             }
         } else {
-            return; // no flags section — already unread
+            return;
         };
 
         if new_name == name {
             return;
         }
 
-        let dest = dir.to_path_buf().join(&new_name);
+        let dest = dir.join(&new_name);
         if std::fs::rename(&path, &dest).is_ok() {
             *self.path.borrow_mut() = dest;
         }
+    }
+
+    /// Convenience: returns `true` when email should be considered unread.
+    pub fn is_unread(&self) -> bool {
+        self.has_mark(Flag::Unseen)
+    }
+
+    /// Convert the current `Email` into `Message<'static>`.
+    pub fn to_message(&self) -> Result<Message<'static>> {
+        let path = self.path();
+        let bytes = fs::read(&*path)
+            .with_context(|| format!("failed to read mail file: {}", path.display()))?;
+
+        MessageParser::default()
+            .parse(&bytes)
+            .map(|m| m.into_owned())
+            .with_context(|| format!("failed to parse mail file: {}", path.display()))
     }
 
     /// Construct an `Email` directly. Only available in test builds.
@@ -458,10 +482,10 @@ mod tests {
         assert!(Email::from_file(&PathBuf::from("/nonexistent/path/file")).is_err());
     }
 
-    // ── mark_as_read ─────────────────────────────────────────────────────────
+    // ── mark / has_mark / clear_mark (Seen / Unseen) ─────────────────────────
 
     #[test]
-    fn mark_as_read_moves_from_new_to_cur() {
+    fn mark_seen_moves_from_new_to_cur() {
         let dir = temp_dir();
         let path = dir.join("new").join("msg1");
         write_file(
@@ -469,7 +493,7 @@ mod tests {
             &minimal_email("id@test", None, "test@example.com", "Test"),
         );
         let email = Email::from_file(&path).unwrap();
-        email.mark_as_read();
+        email.mark(Flag::Seen);
         assert!(email.path().components().any(|c| c.as_os_str() == "cur"));
         assert!(email.path().to_str().unwrap().contains(":2,S"));
         assert!(!email.is_unread());
@@ -477,7 +501,7 @@ mod tests {
     }
 
     #[test]
-    fn mark_as_read_adds_seen_flag_in_cur() {
+    fn mark_seen_adds_flag_in_cur() {
         let dir = temp_dir();
         let path = dir.join("cur").join("msg1:2,");
         write_file(
@@ -485,14 +509,14 @@ mod tests {
             &minimal_email("id@test", None, "test@example.com", "Test"),
         );
         let email = Email::from_file(&path).unwrap();
-        email.mark_as_read();
+        email.mark(Flag::Seen);
         assert!(email.path().to_str().unwrap().contains(":2,S"));
         assert!(!email.is_unread());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn mark_as_read_already_seen_is_noop() {
+    fn mark_seen_already_seen_is_noop() {
         let dir = temp_dir();
         let path = dir.join("cur").join("msg1:2,S");
         write_file(
@@ -501,13 +525,13 @@ mod tests {
         );
         let email = Email::from_file(&path).unwrap();
         let original = email.path().clone();
-        email.mark_as_read();
+        email.mark(Flag::Seen);
         assert_eq!(*email.path(), original);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn mark_as_read_inserts_s_in_alphabetical_order() {
+    fn mark_seen_inserts_in_alphabetical_order() {
         let dir = temp_dir();
         let path = dir.join("cur").join("msg1:2,RT");
         write_file(
@@ -515,7 +539,7 @@ mod tests {
             &minimal_email("id@test", None, "test@example.com", "Test"),
         );
         let email = Email::from_file(&path).unwrap();
-        email.mark_as_read();
+        email.mark(Flag::Seen);
         let p = email.path();
         let name = p.file_name().unwrap().to_str().unwrap();
         assert_eq!(name, "msg1:2,RST");
@@ -523,7 +547,7 @@ mod tests {
     }
 
     #[test]
-    fn mark_as_read_cur_no_flags_appends_seen() {
+    fn mark_seen_cur_no_flags_appends() {
         let dir = temp_dir();
         let path = dir.join("cur").join("msg1");
         write_file(
@@ -531,17 +555,13 @@ mod tests {
             &minimal_email("id@test", None, "test@example.com", "Test"),
         );
         let email = Email::from_file(&path).unwrap();
-        email.mark_as_read();
-        let p = email.path();
-        let name = p.file_name().unwrap().to_str().unwrap();
-        assert!(name.ends_with(":2,S"));
+        email.mark(Flag::Seen);
+        assert!(email.path().to_str().unwrap().ends_with(":2,S"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // ── mark_as_unread ───────────────────────────────────────────────────────
-
     #[test]
-    fn mark_as_unread_in_new_is_noop() {
+    fn mark_unseen_in_new_is_noop() {
         let dir = temp_dir();
         let path = dir.join("new").join("msg1");
         write_file(
@@ -549,15 +569,14 @@ mod tests {
             &minimal_email("id@test", None, "test@example.com", "Test"),
         );
         let email = Email::from_file(&path).unwrap();
-        email.mark_as_unread();
+        email.mark(Flag::Unseen);
         assert!(email.is_unread());
-        let p = email.path();
-        assert_eq!(p.file_name().unwrap(), "msg1");
+        assert_eq!(email.path().file_name().unwrap(), "msg1");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn mark_as_unread_removes_seen_flag() {
+    fn mark_unseen_removes_seen_flag() {
         let dir = temp_dir();
         let path = dir.join("cur").join("msg1:2,S");
         write_file(
@@ -565,16 +584,21 @@ mod tests {
             &minimal_email("id@test", None, "test@example.com", "Test"),
         );
         let email = Email::from_file(&path).unwrap();
-        email.mark_as_unread();
+        email.mark(Flag::Unseen);
         assert!(email.is_unread());
-        let p = email.path();
-        let name = p.file_name().unwrap().to_str().unwrap();
+        let name = email
+            .path()
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
         assert_eq!(name, "msg1:2,");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn mark_as_unread_removes_s_from_multiple_flags() {
+    fn mark_unseen_removes_s_from_multiple_flags() {
         let dir = temp_dir();
         let path = dir.join("cur").join("msg1:2,RST");
         write_file(
@@ -582,16 +606,21 @@ mod tests {
             &minimal_email("id@test", None, "test@example.com", "Test"),
         );
         let email = Email::from_file(&path).unwrap();
-        email.mark_as_unread();
+        email.mark(Flag::Unseen);
         assert!(email.is_unread());
-        let p = email.path();
-        let name = p.file_name().unwrap().to_str().unwrap();
+        let name = email
+            .path()
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
         assert_eq!(name, "msg1:2,RT");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn mark_as_unread_already_unread_is_noop() {
+    fn mark_unseen_already_unread_is_noop() {
         let dir = temp_dir();
         let path = dir.join("cur").join("msg1:2,");
         write_file(
@@ -600,13 +629,13 @@ mod tests {
         );
         let email = Email::from_file(&path).unwrap();
         let original = email.path().clone();
-        email.mark_as_unread();
+        email.mark(Flag::Unseen);
         assert_eq!(*email.path(), original);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn mark_as_unread_roundtrip() {
+    fn seen_unseen_roundtrip() {
         let dir = temp_dir();
         let path = dir.join("new").join("msg1");
         write_file(
@@ -614,11 +643,159 @@ mod tests {
             &minimal_email("id@test", None, "test@example.com", "Test"),
         );
         let email = Email::from_file(&path).unwrap();
-        email.mark_as_read();
+        email.mark(Flag::Seen);
         assert!(!email.is_unread());
-        email.mark_as_unread();
+        email.mark(Flag::Unseen);
         assert!(email.is_unread());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clear_mark_seen_is_same_as_mark_unseen() {
+        let dir = temp_dir();
+        let path = dir.join("cur").join("msg1:2,S");
+        write_file(
+            &path,
+            &minimal_email("id@test", None, "test@example.com", "Test"),
+        );
+        let email = Email::from_file(&path).unwrap();
+        email.clear_mark(Flag::Seen);
+        assert!(email.is_unread());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── mark / has_mark / clear_mark (Replied) ────────────────────────────────
+
+    #[test]
+    fn mark_replied_sets_r_flag() {
+        let dir = temp_dir();
+        let path = dir.join("cur").join("msg1:2,S");
+        write_file(
+            &path,
+            &minimal_email("id@test", None, "test@example.com", "Test"),
+        );
+        let email = Email::from_file(&path).unwrap();
+        email.mark(Flag::Replied);
+        let name = email
+            .path()
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(name, "msg1:2,RS");
+        assert!(email.has_mark(Flag::Replied));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mark_replied_from_new_moves_to_cur() {
+        let dir = temp_dir();
+        let path = dir.join("new").join("msg1");
+        write_file(
+            &path,
+            &minimal_email("id@test", None, "test@example.com", "Test"),
+        );
+        let email = Email::from_file(&path).unwrap();
+        email.mark(Flag::Replied);
+        assert!(email.path().components().any(|c| c.as_os_str() == "cur"));
+        assert!(email.has_mark(Flag::Replied));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clear_mark_replied_removes_r_flag() {
+        let dir = temp_dir();
+        let path = dir.join("cur").join("msg1:2,RS");
+        write_file(
+            &path,
+            &minimal_email("id@test", None, "test@example.com", "Test"),
+        );
+        let email = Email::from_file(&path).unwrap();
+        email.clear_mark(Flag::Replied);
+        let name = email
+            .path()
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(name, "msg1:2,S");
+        assert!(!email.has_mark(Flag::Replied));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn has_mark_replied_false_when_absent() {
+        assert!(!make_email(PathBuf::from("/mb/cur/msg:2,S")).has_mark(Flag::Replied));
+    }
+
+    // ── mark / has_mark / clear_mark (Passed) ────────────────────────────────
+
+    #[test]
+    fn mark_passed_sets_p_flag() {
+        let dir = temp_dir();
+        let path = dir.join("cur").join("msg1:2,S");
+        write_file(
+            &path,
+            &minimal_email("id@test", None, "test@example.com", "Test"),
+        );
+        let email = Email::from_file(&path).unwrap();
+        email.mark(Flag::Passed);
+        let name = email
+            .path()
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(name, "msg1:2,PS");
+        assert!(email.has_mark(Flag::Passed));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clear_mark_passed_removes_p_flag() {
+        let dir = temp_dir();
+        let path = dir.join("cur").join("msg1:2,PS");
+        write_file(
+            &path,
+            &minimal_email("id@test", None, "test@example.com", "Test"),
+        );
+        let email = Email::from_file(&path).unwrap();
+        email.clear_mark(Flag::Passed);
+        let name = email
+            .path()
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(name, "msg1:2,S");
+        assert!(!email.has_mark(Flag::Passed));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn has_mark_passed_false_when_absent() {
+        assert!(!make_email(PathBuf::from("/mb/cur/msg:2,S")).has_mark(Flag::Passed));
+    }
+
+    // ── has_mark (Unseen) ─────────────────────────────────────────────────────
+
+    #[test]
+    fn has_mark_unseen_new_dir_always_true() {
+        assert!(make_email(PathBuf::from("/mb/new/msg")).has_mark(Flag::Unseen));
+    }
+
+    #[test]
+    fn has_mark_unseen_cur_with_seen_flag() {
+        assert!(!make_email(PathBuf::from("/mb/cur/msg:2,S")).has_mark(Flag::Unseen));
+    }
+
+    #[test]
+    fn has_mark_unseen_cur_without_seen_flag() {
+        assert!(make_email(PathBuf::from("/mb/cur/msg:2,")).has_mark(Flag::Unseen));
     }
 
     // ── EmailThread ──────────────────────────────────────────────────────────

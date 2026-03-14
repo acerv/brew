@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@suse.com>
 use crate::core::date::humanize_date;
-use crate::core::thread::{EmailThread, EmailThreadList};
+use crate::core::thread::{EmailThread, EmailThreadList, Flag};
 use crate::ui::utils;
 use ratatui::{
     style::{Color, Modifier, Style},
@@ -155,8 +155,9 @@ impl ThreadsView {
 pub fn draw(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, view: &mut ThreadsView) {
     const FROM_W: usize = 27;
     const DATE_W: usize = 16;
+    const FLAGS_W: usize = 2; // "↩ " or "  "
     let usable = area.width.saturating_sub(2) as usize;
-    let subject_w = usable.saturating_sub(FROM_W + DATE_W + 2);
+    let subject_w = usable.saturating_sub(FROM_W + DATE_W + FLAGS_W + 2);
 
     let items: Vec<ListItem> = view
         .rows
@@ -183,12 +184,18 @@ pub fn draw(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, view: &mut 
             } else {
                 Style::default()
             };
+            let replied_span = if e.has_mark(Flag::Replied) {
+                Span::styled("↩ ", Style::default().fg(Color::Yellow))
+            } else {
+                Span::raw("  ")
+            };
             ListItem::new(Line::from(vec![
                 Span::styled(from, text_style),
                 Span::raw(" "),
                 Span::styled(indent, Style::default().fg(Color::DarkGray)),
                 Span::styled(subject_padded, text_style),
                 Span::raw(" "),
+                replied_span,
                 Span::styled(
                     format!("{:<DATE_W$}", humanize_date(e.timestamp)),
                     Style::default().fg(Color::Cyan),
