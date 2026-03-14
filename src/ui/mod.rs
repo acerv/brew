@@ -5,5 +5,6 @@ pub mod app;
 pub mod compose;
 pub mod editor;
 pub mod email;
+pub mod send;
 pub mod threads;
 pub mod utils;

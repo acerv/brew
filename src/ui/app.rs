@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@suse.com>
 use crate::core::address::{Address, AddressBook};
-use crate::core::config::{self, Config, Smtp};
+use crate::core::config::{self, Config};
 use crate::core::maildir::{Maildir, SortOrder};
 use crate::core::thread::{Email, Flag};
 use crate::ui::compose::{self, EmailCompose};
 use crate::ui::editor::{self, Editor};
 use crate::ui::email::{self, EmailView};
+use crate::ui::send::{SendAction, confirm_send, send_message};
 use crate::ui::threads::{self, ThreadsView};
 use crate::ui::utils;
-use anyhow::anyhow;
 use arboard::Clipboard;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
@@ -1118,7 +1118,12 @@ fn draw_move_popup(frame: &mut ratatui::Frame, app: &App) {
     }
 }
 
-fn draw_list_popup(frame: &mut ratatui::Frame, title: &str, items: &[String], selected: usize) {
+pub(super) fn draw_list_popup(
+    frame: &mut ratatui::Frame,
+    title: &str,
+    items: &[String],
+    selected: usize,
+) {
     use ratatui::widgets::Clear;
 
     let max_label = items.iter().map(|l| l.len()).max().unwrap_or(10);
@@ -1166,114 +1171,6 @@ fn draw_list_popup(frame: &mut ratatui::Frame, title: &str, items: &[String], se
         .highlight_symbol("> ");
 
     frame.render_stateful_widget(list, inner_chunks[1], &mut state);
-}
-
-#[derive(PartialEq)]
-enum SendAction {
-    Sent,
-    Discard,
-    SaveDraft,
-    GoBack,
-}
-
-fn confirm_send(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    has_drafts: bool,
-) -> anyhow::Result<SendAction> {
-    use crossterm::event::{Event, KeyCode};
-
-    let labels: &[&str] = if has_drafts {
-        &["Send Email", "Save as draft", "Discard"]
-    } else {
-        &["Send Email", "Discard"]
-    };
-
-    let to_action = |idx: usize| match labels[idx] {
-        "Send Email" => SendAction::Sent,
-        "Save as draft" => SendAction::SaveDraft,
-        _ => SendAction::Discard,
-    };
-
-    let owned: Vec<String> = labels.iter().map(|s| s.to_string()).collect();
-    let mut selected: usize = 0;
-
-    loop {
-        let sel = selected;
-        terminal.draw(|frame| {
-            draw_list_popup(frame, " Send message? ", &owned, sel);
-        })?;
-
-        if let Event::Key(key) = event::read()? {
-            match key.code {
-                KeyCode::Char('j') | KeyCode::Down => {
-                    selected = (selected + 1).min(labels.len().saturating_sub(1));
-                }
-                KeyCode::Char('k') | KeyCode::Up => {
-                    selected = selected.saturating_sub(1);
-                }
-                KeyCode::Enter => {
-                    return Ok(to_action(selected));
-                }
-                KeyCode::Esc => {
-                    return Ok(SendAction::GoBack);
-                }
-                _ => {}
-            }
-        }
-    }
-}
-
-fn send_message(
-    smtp: &Smtp,
-    to: &[Address],
-    cc: &[Address],
-    subject: &str,
-    body: &str,
-    in_reply_to: Option<&str>,
-) -> anyhow::Result<()> {
-    use lettre::message::header::ContentType;
-    use lettre::transport::smtp::authentication::Credentials;
-    use lettre::{Message, SmtpTransport, Transport};
-
-    let from = Address::new(smtp.name.as_deref().unwrap_or(""), &smtp.username);
-    let mut builder = Message::builder().from(
-        from.full()
-            .parse()
-            .map_err(|e| anyhow!("invalid From address: {e}"))?,
-    );
-    for addr in to {
-        builder = builder.to(addr
-            .full()
-            .parse()
-            .map_err(|e| anyhow!("invalid To address {addr}: {e}"))?);
-    }
-    for addr in cc {
-        builder = builder.cc(addr
-            .full()
-            .parse()
-            .map_err(|e| anyhow!("invalid Cc address {addr}: {e}"))?);
-    }
-    if let Some(irt) = in_reply_to {
-        builder = builder.in_reply_to(irt.to_string());
-    }
-    let email = builder
-        .subject(subject)
-        .header(ContentType::TEXT_PLAIN)
-        .body(body.to_string())
-        .map_err(|e| anyhow!("failed to build message: {e}"))?;
-
-    let creds = Credentials::new(smtp.username.clone(), smtp.password.clone());
-    let transport = SmtpTransport::starttls_relay(&smtp.host)
-        .map_err(|e| anyhow!("SMTP relay error: {e}"))?
-        .port(smtp.port)
-        .credentials(creds)
-        .build();
-
-    transport
-        .send(&email)
-        .map_err(|e| anyhow!("SMTP send error: {e}"))?;
-
-    Ok(())
 }
 
 #[cfg(test)]
