@@ -45,6 +45,41 @@ impl Address {
             &self.name
         }
     }
+
+    /// Split a comma-separated address list into individual `Address` values,
+    /// respecting angle brackets so that `"Doe, John <j@x.com>, alice@x.com"`
+    /// splits into two entries rather than three.
+    pub fn parse_list(list: &str) -> Vec<Self> {
+        let mut result = Vec::new();
+        let mut current = String::new();
+        let mut depth = 0u32;
+
+        for ch in list.chars() {
+            match ch {
+                '<' => {
+                    depth += 1;
+                    current.push(ch);
+                }
+                '>' => {
+                    depth = depth.saturating_sub(1);
+                    current.push(ch);
+                }
+                ',' if depth == 0 => {
+                    let t = current.trim().to_string();
+                    if !t.is_empty() {
+                        result.push(t.parse::<Address>().unwrap());
+                    }
+                    current.clear();
+                }
+                _ => current.push(ch),
+            }
+        }
+        let t = current.trim().to_string();
+        if !t.is_empty() {
+            result.push(t.parse::<Address>().unwrap());
+        }
+        result
+    }
 }
 
 impl<'a> From<&'a mail_parser::Addr<'a>> for Address {
@@ -148,41 +183,6 @@ impl AddressBook {
             .collect();
         let _ = std::fs::write(&self.path, content);
     }
-}
-
-/// Split a comma-separated address list into individual `Address` values,
-/// respecting angle brackets so that `"Doe, John <j@x.com>, alice@x.com"`
-/// splits into two entries rather than three.
-pub fn split_addresses(list: &str) -> Vec<Address> {
-    let mut result = Vec::new();
-    let mut current = String::new();
-    let mut depth = 0u32;
-
-    for ch in list.chars() {
-        match ch {
-            '<' => {
-                depth += 1;
-                current.push(ch);
-            }
-            '>' => {
-                depth = depth.saturating_sub(1);
-                current.push(ch);
-            }
-            ',' if depth == 0 => {
-                let t = current.trim().to_string();
-                if !t.is_empty() {
-                    result.push(t.parse::<Address>().unwrap());
-                }
-                current.clear();
-            }
-            _ => current.push(ch),
-        }
-    }
-    let t = current.trim().to_string();
-    if !t.is_empty() {
-        result.push(t.parse::<Address>().unwrap());
-    }
-    result
 }
 
 #[cfg(test)]
@@ -292,14 +292,14 @@ mod tests {
 
     #[test]
     fn split_single_bare() {
-        let addrs = split_addresses("alice@example.com");
+        let addrs = Address::parse_list("alice@example.com");
         assert_eq!(addrs.len(), 1);
         assert_eq!(addrs[0].address(), "alice@example.com");
     }
 
     #[test]
     fn split_two_bare() {
-        let addrs = split_addresses("alice@x.com, bob@x.com");
+        let addrs = Address::parse_list("alice@x.com, bob@x.com");
         assert_eq!(addrs.len(), 2);
         assert_eq!(addrs[0].address(), "alice@x.com");
         assert_eq!(addrs[1].address(), "bob@x.com");
@@ -307,7 +307,7 @@ mod tests {
 
     #[test]
     fn split_preserves_name_with_angle_brackets() {
-        let addrs = split_addresses("John Doe <john@x.com>, alice@x.com");
+        let addrs = Address::parse_list("John Doe <john@x.com>, alice@x.com");
         assert_eq!(addrs.len(), 2);
         assert_eq!(addrs[0].name(), "John Doe");
         assert_eq!(addrs[0].address(), "john@x.com");
@@ -316,7 +316,7 @@ mod tests {
 
     #[test]
     fn split_mixed() {
-        let addrs = split_addresses("Alice <a@x.com>, b@x.com, Carol <c@x.com>");
+        let addrs = Address::parse_list("Alice <a@x.com>, b@x.com, Carol <c@x.com>");
         assert_eq!(addrs.len(), 3);
         assert_eq!(addrs[0].name(), "Alice");
         assert_eq!(addrs[1].address(), "b@x.com");
@@ -325,13 +325,13 @@ mod tests {
 
     #[test]
     fn split_empty() {
-        let addrs = split_addresses("");
+        let addrs = Address::parse_list("");
         assert!(addrs.is_empty());
     }
 
     #[test]
     fn split_whitespace_only() {
-        let addrs = split_addresses("   ");
+        let addrs = Address::parse_list("   ");
         assert!(addrs.is_empty());
     }
 

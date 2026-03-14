@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@suse.com>
-use crate::core::address::{self, Address};
+use crate::core::address::Address;
 use crate::core::config;
 use crate::core::thread::Email;
 use anyhow::Result;
@@ -26,9 +26,9 @@ impl Draft {
 
         for line in edited.lines().take_while(|l| *l != BODY_SENTINEL) {
             if let Some(val) = line.strip_prefix("To:") {
-                to = address::split_addresses(val);
+                to = Address::parse_list(val);
             } else if let Some(val) = line.strip_prefix("Cc:") {
-                cc = address::split_addresses(val);
+                cc = Address::parse_list(val);
             } else if let Some(val) = line.strip_prefix("Subject:") {
                 subject = val.trim().to_string();
             } else if let Some(val) = line.strip_prefix("In-Reply-To:") {
