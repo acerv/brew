@@ -5,7 +5,7 @@ use crate::core::config;
 use crate::core::thread::Email;
 use anyhow::Result;
 
-const BODY_SENTINEL: &str = "--- body ---";
+pub(super) const BODY_SENTINEL: &str = "--- body ---";
 
 /// A parsed draft ready to be sent.
 pub struct Draft {

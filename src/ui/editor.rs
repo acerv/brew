@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@suse.com>
+use super::compose::BODY_SENTINEL;
 use crate::core::address::AddressBook;
 use edtui::{
     EditorEventHandler, EditorMode, EditorState, EditorStatusLine, EditorTheme, EditorView,
@@ -11,8 +12,6 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
 };
-
-const BODY_SENTINEL: &str = "--- body ---";
 
 /// Which part of the compose view is focused.
 #[derive(Clone, Copy, PartialEq)]
