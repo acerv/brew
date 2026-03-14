@@ -27,23 +27,25 @@ pub struct ThreadsView {
 }
 
 impl ThreadsView {
+    fn flatten(&mut self) {
+        self.rows.clear();
+        flatten_recursive(&self.threads.borrow(), 0, &mut self.rows);
+    }
+
     /// Build the view from a shared `ThreadList`.
     pub fn new(threads: EmailThreadList) -> Self {
-        let mut rows = Vec::new();
-        flatten(&threads.borrow(), 0, &mut rows);
-
-        let mut state = ListState::default();
-        if !rows.is_empty() {
-            state.select(Some(0));
-        }
-
-        Self {
+        let mut view = Self {
             threads,
-            state,
-            rows,
+            state: ListState::default(),
+            rows: Vec::new(),
             unread_only: false,
             search: None,
+        };
+        view.flatten();
+        if !view.rows.is_empty() {
+            view.state.select(Some(0));
         }
+        view
     }
 
     pub fn prev_email(&mut self, n: usize) {
@@ -100,8 +102,7 @@ impl ThreadsView {
             .get(old_idx)
             .map(|r| r.thread.parent.message_id.clone());
 
-        self.rows.clear();
-        flatten(&self.threads.borrow(), 0, &mut self.rows);
+        self.flatten();
 
         if self.unread_only {
             self.rows.retain(|r| r.thread.parent.is_unread());
@@ -229,14 +230,14 @@ pub fn draw(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, view: &mut 
     frame.render_stateful_widget(widget, area, &mut view.state);
 }
 
-fn flatten(threads: &[Rc<EmailThread>], depth: usize, out: &mut Vec<Row>) {
+fn flatten_recursive(threads: &[Rc<EmailThread>], depth: usize, out: &mut Vec<Row>) {
     for thread in threads {
         out.push(Row {
             depth,
             thread: thread.clone(),
         });
         let replies = thread.replies.borrow();
-        flatten(&replies, depth + 1, out);
+        flatten_recursive(&replies, depth + 1, out);
     }
 }
 
