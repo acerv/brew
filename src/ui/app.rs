@@ -153,9 +153,16 @@ impl App {
                                     "{diff} new email{} in {label}",
                                     if diff == 1 { "" } else { "s" }
                                 );
+                                let icon = resolve_notification_icon(&[
+                                    "mail-message",
+                                    "mail-message-symbolic",
+                                    "mail-unread",
+                                    "mail-unread-symbolic",
+                                ]);
                                 let _ = notify_rust::Notification::new()
                                     .summary("brew")
                                     .body(&body)
+                                    .icon(&icon)
                                     .show();
                             }
                         }
@@ -781,6 +788,54 @@ impl App {
         self.maildirs[target_mb_idx].sync();
         self.threads[target_mb_idx].invalidate();
     }
+}
+
+/// Returns the first icon name from `candidates` that can be found in common
+/// freedesktop icon directories, or the last candidate as a final fallback.
+fn resolve_notification_icon(candidates: &[&str]) -> String {
+    let search_dirs = [
+        "/usr/share/icons/Adwaita",
+        "/usr/share/icons/hicolor",
+        "/usr/share/icons/gnome",
+        "/usr/share/pixmaps",
+    ];
+    let extensions = ["png", "svg", "xpm"];
+
+    for name in candidates {
+        for dir in &search_dirs {
+            let base = std::path::Path::new(dir);
+            // pixmaps is flat; icon themes have subdirs
+            for ext in &extensions {
+                if base.join(format!("{name}.{ext}")).exists() {
+                    return name.to_string();
+                }
+            }
+            // Walk one level of size dirs (e.g. hicolor/48x48/apps/)
+            if let Ok(entries) = std::fs::read_dir(base) {
+                for size_dir in entries.flatten() {
+                    for subdir in ["apps", "mimetypes", "status"] {
+                        for ext in &extensions {
+                            if size_dir
+                                .path()
+                                .join(subdir)
+                                .join(format!("{name}.{ext}"))
+                                .exists()
+                            {
+                                return name.to_string();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Last candidate is the final fallback (notify-rust shows no icon if missing)
+    candidates
+        .last()
+        .copied()
+        .unwrap_or("dialog-information")
+        .to_string()
 }
 
 fn draw_startup(frame: &mut ratatui::Frame, label: &str, current: usize, total: usize) {
