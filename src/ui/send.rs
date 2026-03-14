@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@suse.com>
-use super::app::draw_list_popup;
+use super::draw::draw_list_popup;
 use crate::core::address::Address;
 use crate::core::config::Smtp;
 use anyhow::anyhow;

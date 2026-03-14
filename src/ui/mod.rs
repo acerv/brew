@@ -3,6 +3,7 @@
 
 pub mod app;
 pub mod compose;
+pub mod draw;
 pub mod editor;
 pub mod email;
 pub mod send;

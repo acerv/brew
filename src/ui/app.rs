@@ -1,71 +1,64 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Andrea Cervesato <andrea.cervesato@suse.com>
 use crate::core::address::{Address, AddressBook};
-use crate::core::config::{self, Config};
-use crate::core::maildir::{Maildir, SortOrder};
+use crate::core::config::Config;
+use crate::core::maildir::Maildir;
 use crate::core::thread::{Email, Flag};
 use crate::ui::compose::{self, EmailCompose};
-use crate::ui::editor::{self, Editor};
-use crate::ui::email::{self, EmailView};
+use crate::ui::draw;
+use crate::ui::editor::Editor;
+use crate::ui::email::EmailView;
 use crate::ui::send::{SendAction, confirm_send, send_message};
-use crate::ui::threads::{self, ThreadsView};
-use crate::ui::utils;
+use crate::ui::threads::ThreadsView;
 use arboard::Clipboard;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{
-    Terminal,
-    backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout},
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, LineGauge, List, ListItem, ListState, Paragraph, Tabs},
-};
+use ratatui::{Terminal, backend::CrosstermBackend, widgets::ListState};
 use std::io;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 const POLLING_TIME: u64 = 5;
 
-enum SearchMode {
+pub(super) enum SearchMode {
     Off,
     Typing(String),
     Applied,
 }
 
-enum MoveMode {
+pub(super) enum MoveMode {
     Off,
     Active { selected: usize },
 }
 
 /// The origin of a compose tab, used to set the correct flag when sent.
-enum ComposeKind {
+pub(super) enum ComposeKind {
     New,
     Reply(String),
     Forward(String),
 }
 
-enum Tab {
+pub(super) enum Tab {
     Email(Box<EmailView>),
     Compose(Box<Editor>, ComposeKind),
 }
 
 pub struct App {
-    config: Config,
-    sidebar_state: ListState,
-    maildirs: Vec<Maildir>,
-    threads: Vec<ThreadsView>,
+    pub(super) config: Config,
+    pub(super) sidebar_state: ListState,
+    pub(super) maildirs: Vec<Maildir>,
+    pub(super) threads: Vec<ThreadsView>,
     /// Open tabs. Tab 0 is always the "Brew" main view; tabs start at index 1.
-    tabs: Vec<Tab>,
-    current_tab: usize,
-    current_mb: usize,
+    pub(super) tabs: Vec<Tab>,
+    pub(super) current_tab: usize,
+    pub(super) current_mb: usize,
     pending_sync: Option<mpsc::Receiver<Option<String>>>,
-    search: SearchMode,
-    move_mode: MoveMode,
-    status_error: Option<String>,
+    pub(super) search: SearchMode,
+    pub(super) move_mode: MoveMode,
+    pub(super) status_error: Option<String>,
     terminal: Option<Terminal<CrosstermBackend<io::Stdout>>>,
     address_book: AddressBook,
     clipboard: Option<Clipboard>,
@@ -86,7 +79,7 @@ impl App {
         let total = config.mailboxes.len();
         for (i, mb) in config.mailboxes.iter().enumerate() {
             let label = mb.label.as_str();
-            terminal.draw(|frame| draw_startup(frame, label, i, total))?;
+            terminal.draw(|frame| draw::draw_startup(frame, label, i, total))?;
             let maildir = Maildir::new(&mb.path).unwrap_or_default();
             let tv = ThreadsView::new(maildir.threads());
             maildirs.push(maildir);
@@ -201,7 +194,7 @@ impl App {
             }
 
             let mut terminal = self.terminal.take().unwrap();
-            terminal.draw(|frame| draw(frame, self))?;
+            terminal.draw(|frame| draw::draw(frame, self))?;
             self.terminal = Some(terminal);
 
             if event::poll(Duration::from_secs(POLLING_TIME))?
@@ -915,267 +908,10 @@ fn resolve_notification_icon(candidates: &[&str]) -> String {
         .to_string()
 }
 
-fn draw_startup(frame: &mut ratatui::Frame, label: &str, current: usize, total: usize) {
-    let area = frame.area();
-    let w = 50u16.min(area.width);
-    let x = area.width.saturating_sub(w) / 2;
-    let y = area.height / 2;
-
-    let ratio = if total == 0 {
-        1.0
-    } else {
-        (current + 1) as f64 / total as f64
-    };
-    let pct = (ratio * 100.0) as u16;
-
-    frame.render_widget(
-        Paragraph::new(format!(" {label}")).style(Style::default().fg(Color::DarkGray)),
-        ratatui::layout::Rect::new(x, y, w, 1),
-    );
-    frame.render_widget(
-        LineGauge::default()
-            .filled_style(Style::default().fg(Color::Cyan))
-            .unfilled_style(Style::default().fg(Color::DarkGray))
-            .ratio(ratio)
-            .label(format!("{pct}%")),
-        ratatui::layout::Rect::new(x, y + 1, w, 1),
-    );
-}
-
-fn draw(frame: &mut ratatui::Frame, app: &mut App) {
-    let area = frame.area();
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Min(0),
-            Constraint::Length(1),
-        ])
-        .split(area);
-
-    let titles: Vec<String> = std::iter::once("Brew".to_string())
-        .chain(app.tabs.iter().map(|tab| match tab {
-            Tab::Email(ev) => utils::truncate_string(ev.subject(), 20),
-            Tab::Compose(ed, _) => {
-                let t = ed.title();
-                if t.is_empty() {
-                    "Compose".to_string()
-                } else {
-                    utils::truncate_string(t, 20)
-                }
-            }
-        }))
-        .map(|s| format!(" {s} "))
-        .collect();
-
-    let tab_bar = Tabs::new(titles)
-        .select(app.current_tab)
-        .style(Style::default().fg(Color::DarkGray))
-        .highlight_style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        );
-    frame.render_widget(tab_bar, chunks[0]);
-    frame.render_widget(Block::default().borders(Borders::TOP), chunks[1]);
-
-    if app.current_tab == 0 {
-        draw_main(frame, chunks[2], app);
-    } else if let Some(tab) = app.tabs.get_mut(app.current_tab.saturating_sub(1)) {
-        match tab {
-            Tab::Email(ev) => email::draw(frame, chunks[2], ev),
-            Tab::Compose(ed, _) => editor::draw(frame, chunks[2], ed),
-        }
-    }
-
-    draw_statusbar(frame, chunks[3], app);
-    draw_move_popup(frame, app);
-}
-
-fn draw_main(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &mut App) {
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(24), Constraint::Min(0)])
-        .split(area);
-
-    app.sidebar_state.select(Some(app.current_mb));
-    let unread_filters: Vec<bool> = app.threads.iter().map(|tv| tv.is_unread_only()).collect();
-    draw_sidebar(
-        frame,
-        chunks[0],
-        &mut app.sidebar_state,
-        &app.config.mailboxes,
-        &app.maildirs,
-        &unread_filters,
-    );
-
-    if let Some(tv) = app.threads.get_mut(app.current_mb) {
-        threads::draw(frame, chunks[1], tv);
-    }
-}
-
-fn draw_sidebar(
-    frame: &mut ratatui::Frame,
-    area: ratatui::layout::Rect,
-    state: &mut ListState,
-    mailboxes: &[config::Mailbox],
-    maildirs: &[Maildir],
-    unread_filters: &[bool],
-) {
-    let items: Vec<ListItem> = mailboxes
-        .iter()
-        .enumerate()
-        .map(|(i, m)| {
-            let unread = maildirs
-                .iter()
-                .find(|md| md.path() == m.path)
-                .map(|md| md.unread_count())
-                .unwrap_or(0);
-            let filter_active = unread_filters.get(i).copied().unwrap_or(false);
-            let (text, style) = if unread > 0 {
-                (
-                    format!("{} ({})", m.label, unread),
-                    Style::default()
-                        .fg(Color::Green)
-                        .add_modifier(Modifier::BOLD),
-                )
-            } else {
-                (m.label.clone(), Style::default())
-            };
-            let mut spans = vec![Span::styled(text, style)];
-            if filter_active {
-                spans.push(Span::styled(" [u]", Style::default().fg(Color::Yellow)));
-            }
-            ListItem::new(Line::from(spans))
-        })
-        .collect();
-
-    let widget = List::new(items)
-        .block(Block::default().borders(Borders::RIGHT))
-        .highlight_style(
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("> ");
-
-    frame.render_stateful_widget(widget, area, state);
-}
-
-fn draw_statusbar(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App) {
-    let widget = if let SearchMode::Typing(input) = &app.search {
-        Paragraph::new(format!(" /{input}_")).style(Style::default().fg(Color::Yellow))
-    } else if let Some(err) = &app.status_error {
-        Paragraph::new(format!(" error: {err}")).style(Style::default().fg(Color::Red))
-    } else if app.current_tab == 0 {
-        let mut spans = vec![Span::styled(
-            " j/k↑↓ move  J/K mailbox  r reply  R reply+quote  C compose  / search  Q quit",
-            Style::default().fg(Color::DarkGray),
-        )];
-        if let Some(md) = app.maildirs.get(app.current_mb)
-            && md.sort_order() == SortOrder::Ascending
-        {
-            spans.push(Span::styled("  |  ", Style::default().fg(Color::DarkGray)));
-            spans.push(Span::styled(
-                "sort: asc",
-                Style::default().fg(Color::Yellow),
-            ));
-        }
-        if let Some(tv) = app.threads.get(app.current_mb)
-            && let Some(q) = tv.search()
-        {
-            spans.push(Span::styled("  |  ", Style::default().fg(Color::DarkGray)));
-            spans.push(Span::styled(
-                format!("search: {q}"),
-                Style::default().fg(Color::Yellow),
-            ));
-        }
-        Paragraph::new(Line::from(spans))
-    } else {
-        Paragraph::new(" j/k scroll  J/K email  r reply  R reply+quote  C compose  q close")
-            .style(Style::default().fg(Color::DarkGray))
-    };
-    frame.render_widget(widget, area);
-}
-
-fn draw_move_popup(frame: &mut ratatui::Frame, app: &App) {
-    let MoveMode::Active { selected } = app.move_mode else {
-        return;
-    };
-
-    let labels: Vec<String> = app
-        .config
-        .mailboxes
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| *i != app.current_mb)
-        .map(|(_, mb)| mb.label.clone())
-        .collect();
-
-    if !labels.is_empty() {
-        draw_list_popup(frame, " Move to ", &labels, selected);
-    }
-}
-
-pub(super) fn draw_list_popup(
-    frame: &mut ratatui::Frame,
-    title: &str,
-    items: &[String],
-    selected: usize,
-) {
-    use ratatui::widgets::Clear;
-
-    let max_label = items.iter().map(|l| l.len()).max().unwrap_or(10);
-    let popup_w = (max_label as u16 + 8).clamp(22, 40);
-    let popup_h = items.len() as u16 + 4;
-
-    let area = frame.area();
-    let x = area.width.saturating_sub(popup_w) / 2;
-    let y = area.height.saturating_sub(popup_h) / 2;
-    let popup_area =
-        ratatui::layout::Rect::new(x, y, popup_w.min(area.width), popup_h.min(area.height));
-
-    frame.render_widget(Clear, popup_area);
-
-    let block = Block::default().borders(Borders::ALL).title(Span::styled(
-        title.to_string(),
-        Style::default().add_modifier(Modifier::BOLD),
-    ));
-    let inner = block.inner(popup_area);
-    frame.render_widget(block, popup_area);
-
-    let inner_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Min(0),
-            Constraint::Length(1),
-        ])
-        .split(inner);
-
-    let list_items: Vec<ListItem> = items
-        .iter()
-        .map(|l| ListItem::new(format!(" {l} ")))
-        .collect();
-
-    let mut state = ListState::default();
-    state.select(Some(selected));
-
-    let list = List::new(list_items)
-        .highlight_style(
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("> ");
-
-    frame.render_stateful_widget(list, inner_chunks[1], &mut state);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::config;
     use crossterm::event::{KeyEventKind, KeyEventState};
 
     fn mb(label: &str, path: &str) -> config::Mailbox {
@@ -1546,7 +1282,7 @@ mod tests {
         let mut app = make_app(vec![mb("Inbox", "/inbox")]);
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        terminal.draw(|frame| draw::draw(frame, &mut app)).unwrap();
         let buf = terminal.backend().buffer().clone();
         let first_row: String = (0..buf.area().width)
             .map(|x| buf.cell((x, 0)).map_or(" ", |c| c.symbol()))
@@ -1561,7 +1297,7 @@ mod tests {
         push_tab(&mut app, "Hello subject");
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        terminal.draw(|frame| draw::draw(frame, &mut app)).unwrap();
         let buf = terminal.backend().buffer().clone();
         let first_row: String = (0..buf.area().width)
             .map(|x| buf.cell((x, 0)).map_or(" ", |c| c.symbol()))
@@ -1609,7 +1345,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
-                draw_sidebar(
+                draw::draw_sidebar(
                     frame,
                     ratatui::layout::Rect::new(0, 0, w, h),
                     state,
@@ -1692,7 +1428,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| draw_main(frame, frame.area(), &mut app))
+            .draw(|frame| draw::draw_main(frame, frame.area(), &mut app))
             .unwrap();
         // After draw_main, sidebar_state should be synced with current_mb
         assert_eq!(app.sidebar_state.selected(), Some(1));
