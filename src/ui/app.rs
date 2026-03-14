@@ -890,7 +890,7 @@ fn draw_statusbar(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, app: 
         Paragraph::new(format!(" error: {err}")).style(Style::default().fg(Color::Red))
     } else if app.current_tab == 0 {
         let mut spans = vec![Span::styled(
-            " j/k↑↓ move  J/K mailbox  Enter open  r reply  R reply+quote  m move  / search  s sort  CTRL+n/p tabs  Q quit",
+            " j/k↑↓ move  J/K mailbox  r reply  R reply+quote  C compose  / search  Q quit",
             Style::default().fg(Color::DarkGray),
         )];
         if let Some(md) = app.maildirs.get(app.current_mb)
@@ -913,10 +913,8 @@ fn draw_statusbar(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, app: 
         }
         Paragraph::new(Line::from(spans))
     } else {
-        Paragraph::new(
-            " j/k scroll  J/K email  r reply  R reply+quote  m move  CTRL+n/p tabs  q close",
-        )
-        .style(Style::default().fg(Color::DarkGray))
+        Paragraph::new(" j/k scroll  J/K email  r reply  R reply+quote  C compose  q close")
+            .style(Style::default().fg(Color::DarkGray))
     };
     frame.render_widget(widget, area);
 }
