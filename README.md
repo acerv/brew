@@ -1,4 +1,8 @@
-# brew
+<p align="left">
+  <img src="brew.svg" alt="brew" width="320"/>
+</p>
+
+[![Rust](https://github.com/acerv/brew/actions/workflows/rust.yml/badge.svg)](https://github.com/acerv/brew/actions)
 
 A terminal email client for Maildir folders, written in Rust.
 
