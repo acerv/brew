@@ -41,9 +41,16 @@ enum MoveMode {
     Active { selected: usize },
 }
 
+/// The origin of a compose tab, used to set the correct flag when sent.
+enum ComposeKind {
+    New,
+    Reply(String),
+    Forward(String),
+}
+
 enum Tab {
     Email(Box<EmailView>),
-    Compose(Box<Editor>),
+    Compose(Box<Editor>, ComposeKind),
 }
 
 pub struct App {
@@ -252,7 +259,7 @@ impl App {
     fn handle_main_key(&mut self, key: KeyEvent) -> bool {
         match (key.modifiers, key.code) {
             (_, KeyCode::Char('Q')) => return false,
-            (_, KeyCode::Char('f')) => self.trigger_sync(),
+            (KeyModifiers::CONTROL, KeyCode::Char('s')) => self.trigger_sync(),
             (_, KeyCode::Char('D')) => self.delete_selected_thread(),
             (_, KeyCode::Char('N')) => {
                 if let Some(tv) = self.threads.get_mut(self.current_mb) {
@@ -320,6 +327,7 @@ impl App {
             (_, KeyCode::Char('C')) => self.compose(),
             (_, KeyCode::Char('r')) => self.open_reply_from_thread(false),
             (_, KeyCode::Char('R')) => self.open_reply_from_thread(true),
+            (_, KeyCode::Char('f')) => self.open_forward_from_thread(),
             _ => {}
         }
         true
@@ -332,13 +340,13 @@ impl App {
         }
         match self.tabs[ei] {
             Tab::Email(_) => self.handle_email_tab_key(key, ei),
-            Tab::Compose(_) => self.handle_compose_tab_key(key, ei),
+            Tab::Compose(_, _) => self.handle_compose_tab_key(key, ei),
         }
         true
     }
 
     fn handle_compose_tab_key(&mut self, key: KeyEvent, ei: usize) {
-        let should_show_dialog = if let Tab::Compose(ref mut ed) = self.tabs[ei] {
+        let should_show_dialog = if let Tab::Compose(ref mut ed, _) = self.tabs[ei] {
             match (key.modifiers, key.code) {
                 (KeyModifiers::CONTROL, KeyCode::Char('q')) => true,
                 _ => {
@@ -355,9 +363,14 @@ impl App {
             return;
         }
 
-        // Extract text before borrowing terminal
-        let text = if let Tab::Compose(ref ed) = self.tabs[ei] {
-            ed.text()
+        // Extract text and compose kind before borrowing terminal.
+        let (text, kind_id) = if let Tab::Compose(ref ed, ref kind) = self.tabs[ei] {
+            let id = match kind {
+                ComposeKind::Reply(id) | ComposeKind::Forward(id) => Some(id.clone()),
+                ComposeKind::New => None,
+            };
+            let is_fwd = matches!(kind, ComposeKind::Forward(_));
+            (ed.text(), id.map(|i| (i, is_fwd)))
         } else {
             return;
         };
@@ -384,8 +397,8 @@ impl App {
                 let mut addrs = draft.to.clone();
                 addrs.extend(draft.cc.clone());
                 self.address_book.harvest(&addrs);
-                if !draft.to.is_empty()
-                    && let Err(e) = send_message(
+                let send_err = !draft.to.is_empty()
+                    && send_message(
                         &self.config.smtp,
                         &draft.to,
                         &draft.cc,
@@ -393,13 +406,14 @@ impl App {
                         &draft.body,
                         draft.in_reply_to.as_deref(),
                     )
-                {
-                    self.status_error = Some(e.to_string());
-                } else if let Some(irt) = draft.in_reply_to.as_deref() {
-                    // Mark the original email as replied.
+                    .is_err();
+                if send_err {
+                    self.status_error = Some("Failed to send email".to_string());
+                } else if let Some((id, is_fwd)) = kind_id {
+                    let flag = if is_fwd { Flag::Passed } else { Flag::Replied };
                     for md in &self.maildirs {
-                        if let Some(thread) = md.find_by_id(irt) {
-                            thread.parent.mark(Flag::Replied);
+                        if let Some(thread) = md.find_by_id(&id) {
+                            thread.parent.mark(flag);
                             break;
                         }
                     }
@@ -481,6 +495,7 @@ impl App {
             (_, KeyCode::Char('D')) => self.delete_current_tab_email(),
             (_, KeyCode::Char('r')) => self.open_reply_from_tab(false),
             (_, KeyCode::Char('R')) => self.open_reply_from_tab(true),
+            (_, KeyCode::Char('f')) => self.open_forward_from_tab(),
             (_, KeyCode::Char('Y')) => {
                 if let Some(Tab::Email(ev)) = self.tabs.get_mut(ei) {
                     let raw = ev.raw_body();
@@ -627,7 +642,7 @@ impl App {
             .is_some_and(|mb| mb.is_drafts());
         if is_drafts {
             match compose::email_to_draft(&thread.parent) {
-                Ok(draft) => self.open_editor(draft),
+                Ok(draft) => self.open_editor(draft, ComposeKind::New),
                 Err(e) => self.status_error = Some(e.to_string()),
             }
         } else {
@@ -674,7 +689,7 @@ impl App {
     }
 
     fn compose(&mut self) {
-        self.open_editor(compose::compose_draft());
+        self.open_editor(compose::compose_draft(), ComposeKind::New);
     }
 
     fn open_reply_from_thread(&mut self, quote: bool) {
@@ -685,8 +700,9 @@ impl App {
         else {
             return;
         };
+        let id = thread.parent.message_id.clone();
         match thread.parent.reply_draft(quote, &self.config.smtp.username) {
-            Ok(draft) => self.open_editor(draft),
+            Ok(draft) => self.open_editor(draft, ComposeKind::Reply(id)),
             Err(e) => self.status_error = Some(e.to_string()),
         }
     }
@@ -698,16 +714,53 @@ impl App {
         };
         let path = ev.path().to_path_buf();
         match Email::from_file(&path) {
-            Ok(email) => match email.reply_draft(quote, &self.config.smtp.username) {
-                Ok(draft) => self.open_editor(draft),
-                Err(e) => self.status_error = Some(e.to_string()),
-            },
+            Ok(email) => {
+                let id = email.message_id.clone();
+                match email.reply_draft(quote, &self.config.smtp.username) {
+                    Ok(draft) => self.open_editor(draft, ComposeKind::Reply(id)),
+                    Err(e) => self.status_error = Some(e.to_string()),
+                }
+            }
             Err(e) => self.status_error = Some(e.to_string()),
         }
     }
 
-    fn open_editor(&mut self, draft: String) {
-        self.tabs.push(Tab::Compose(Box::new(Editor::new(&draft))));
+    fn open_forward_from_thread(&mut self) {
+        let Some(thread) = self
+            .threads
+            .get(self.current_mb)
+            .and_then(|tv| tv.selected())
+        else {
+            return;
+        };
+        let id = thread.parent.message_id.clone();
+        match compose::forward_draft(&thread.parent) {
+            Ok(draft) => self.open_editor(draft, ComposeKind::Forward(id)),
+            Err(e) => self.status_error = Some(e.to_string()),
+        }
+    }
+
+    fn open_forward_from_tab(&mut self) {
+        let ei = self.current_tab.saturating_sub(1);
+        let Some(Tab::Email(ev)) = self.tabs.get(ei) else {
+            return;
+        };
+        let path = ev.path().to_path_buf();
+        match Email::from_file(&path) {
+            Ok(email) => {
+                let id = email.message_id.clone();
+                match compose::forward_draft(&email) {
+                    Ok(draft) => self.open_editor(draft, ComposeKind::Forward(id)),
+                    Err(e) => self.status_error = Some(e.to_string()),
+                }
+            }
+            Err(e) => self.status_error = Some(e.to_string()),
+        }
+    }
+
+    fn open_editor(&mut self, draft: String, kind: ComposeKind) {
+        self.tabs
+            .push(Tab::Compose(Box::new(Editor::new(&draft)), kind));
         self.current_tab = self.tabs.len();
     }
 
@@ -888,7 +941,7 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     let titles: Vec<String> = std::iter::once("Brew".to_string())
         .chain(app.tabs.iter().map(|tab| match tab {
             Tab::Email(ev) => utils::truncate_string(ev.subject(), 20),
-            Tab::Compose(ed) => {
+            Tab::Compose(ed, _) => {
                 let t = ed.title();
                 if t.is_empty() {
                     "Compose".to_string()
@@ -916,7 +969,7 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     } else if let Some(tab) = app.tabs.get_mut(app.current_tab.saturating_sub(1)) {
         match tab {
             Tab::Email(ev) => email::draw(frame, chunks[2], ev),
-            Tab::Compose(ed) => editor::draw(frame, chunks[2], ed),
+            Tab::Compose(ed, _) => editor::draw(frame, chunks[2], ed),
         }
     }
 

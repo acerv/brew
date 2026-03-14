@@ -135,6 +135,36 @@ pub fn email_to_draft(email: &Email) -> Result<String> {
     Ok(draft)
 }
 
+/// Generate a forward draft for `email` — empty `To:`, `Fwd:` subject,
+/// original body quoted with an attribution header.
+pub fn forward_draft(email: &Email) -> Result<String> {
+    let msg = email.to_message()?;
+
+    let subject = if email.subject.starts_with("Fwd:") || email.subject.starts_with("fwd:") {
+        email.subject.clone()
+    } else {
+        format!("Fwd: {}", email.subject)
+    };
+
+    let body = msg.body_text(0).map(|t| t.into_owned()).unwrap_or_default();
+
+    let mut draft = format!("To: \nSubject: {subject}\n{BODY_SENTINEL}\n");
+    draft.push_str(&format!(
+        "---------- Forwarded message ----------\nFrom: {}\nSubject: {}\n\n",
+        email.from.full(),
+        email.subject,
+    ));
+    for line in body.lines() {
+        draft.push_str(&format!("> {line}\n"));
+    }
+
+    if let Some(sig) = config::load_signature() {
+        draft.push_str(&format!("\n--\n{sig}\n"));
+    }
+
+    Ok(draft)
+}
+
 /// Extension trait for Email to generate reply drafts.
 pub trait EmailReply {
     /// Generate a reply draft for this email.
@@ -437,6 +467,75 @@ mod tests {
         let cc_line = draft.lines().find(|l| l.starts_with("Cc:")).unwrap_or("");
         let count = cc_line.matches("bob@x.com").count();
         assert_eq!(count, 1, "bob@x.com must appear only once in Cc: {draft}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ── forward_draft ────────────────────────────────────────────────────────
+
+    #[test]
+    fn forward_draft_to_is_empty() {
+        let content = "Message-ID: <id@test>\r\nFrom: alice@x.com\r\nTo: bob@x.com\r\nSubject: Hello\r\nDate: Mon, 01 Jan 2024 00:00:00 +0000\r\n\r\nBody text\r\n";
+        let path = write_tmp_email(content);
+        let email = crate::core::thread::Email::from_file(&path).unwrap();
+        let draft = forward_draft(&email).unwrap();
+        let to_line = draft.lines().find(|l| l.starts_with("To:")).unwrap_or("");
+        assert_eq!(to_line, "To: ", "To: must be empty: {draft}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn forward_draft_adds_fwd_prefix() {
+        let content = "Message-ID: <id@test>\r\nFrom: alice@x.com\r\nTo: bob@x.com\r\nSubject: Hello\r\nDate: Mon, 01 Jan 2024 00:00:00 +0000\r\n\r\nBody\r\n";
+        let path = write_tmp_email(content);
+        let email = crate::core::thread::Email::from_file(&path).unwrap();
+        let draft = forward_draft(&email).unwrap();
+        assert!(
+            draft.contains("Subject: Fwd: Hello"),
+            "subject must have Fwd: prefix: {draft}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn forward_draft_does_not_double_fwd_prefix() {
+        let content = "Message-ID: <id@test>\r\nFrom: alice@x.com\r\nTo: bob@x.com\r\nSubject: Fwd: Hello\r\nDate: Mon, 01 Jan 2024 00:00:00 +0000\r\n\r\nBody\r\n";
+        let path = write_tmp_email(content);
+        let email = crate::core::thread::Email::from_file(&path).unwrap();
+        let draft = forward_draft(&email).unwrap();
+        assert!(
+            !draft.contains("Fwd: Fwd:"),
+            "subject must not double Fwd: prefix: {draft}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn forward_draft_includes_original_body_quoted() {
+        let content = "Message-ID: <id@test>\r\nFrom: alice@x.com\r\nTo: bob@x.com\r\nSubject: Hi\r\nDate: Mon, 01 Jan 2024 00:00:00 +0000\r\n\r\nOriginal body\r\n";
+        let path = write_tmp_email(content);
+        let email = crate::core::thread::Email::from_file(&path).unwrap();
+        let draft = forward_draft(&email).unwrap();
+        assert!(
+            draft.contains("> Original body"),
+            "body must be quoted: {draft}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn forward_draft_includes_attribution_header() {
+        let content = "Message-ID: <id@test>\r\nFrom: Alice <alice@x.com>\r\nTo: bob@x.com\r\nSubject: Hi\r\nDate: Mon, 01 Jan 2024 00:00:00 +0000\r\n\r\nBody\r\n";
+        let path = write_tmp_email(content);
+        let email = crate::core::thread::Email::from_file(&path).unwrap();
+        let draft = forward_draft(&email).unwrap();
+        assert!(
+            draft.contains("Forwarded message"),
+            "draft must contain attribution header: {draft}"
+        );
+        assert!(
+            draft.contains("alice@x.com"),
+            "attribution must include original sender: {draft}"
+        );
         let _ = std::fs::remove_file(&path);
     }
 }

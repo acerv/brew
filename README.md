@@ -73,6 +73,7 @@ Optional files (plain text, loaded from `~/.config/brew/`):
 | `Enter`               | Open email in a new tab (Drafts mailbox: reopen in editor) |
 | `r`                   | Reply-all (empty body)                                     |
 | `R`                   | Reply-all (quoted)                                         |
+| `f`                   | Forward email                                              |
 | `C`                   | Compose new email                                          |
 | `v`                   | Toggle read / unread                                       |
 | `m`                   | Move email to another mailbox (popup picker)               |
@@ -80,7 +81,7 @@ Optional files (plain text, loaded from `~/.config/brew/`):
 | `N`                   | Toggle unread-only filter                                  |
 | `/`                   | Search by subject (live)                                   |
 | `Esc`                 | Clear search filter                                        |
-| `f`                   | Force sync mailboxes                                       |
+| `Ctrl+S`              | Force sync mailboxes                                       |
 | `D`                   | Delete email                                               |
 | `Q`                   | Quit                                                       |
 
@@ -97,6 +98,7 @@ Optional files (plain text, loaded from `~/.config/brew/`):
 | `J` / `K`             | Next / previous email            |
 | `r`                   | Reply (empty body)               |
 | `R`                   | Reply (quoted)                   |
+| `f`                   | Forward email                    |
 | `m`                   | Move email to another mailbox    |
 | `D`                   | Delete email and close tab       |
 | `q`                   | Close tab                        |

@@ -155,7 +155,7 @@ impl ThreadsView {
 pub fn draw(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, view: &mut ThreadsView) {
     const FROM_W: usize = 27;
     const DATE_W: usize = 16;
-    const FLAGS_W: usize = 2; // "↩ " or "  "
+    const FLAGS_W: usize = 3; // "↩→ " / "↩  " / " → " / "   "
     let usable = area.width.saturating_sub(2) as usize;
     let subject_w = usable.saturating_sub(FROM_W + DATE_W + FLAGS_W + 2);
 
@@ -185,7 +185,12 @@ pub fn draw(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, view: &mut 
                 Style::default()
             };
             let replied_span = if e.has_mark(Flag::Replied) {
-                Span::styled("↩ ", Style::default().fg(Color::Yellow))
+                Span::styled("↩", Style::default().fg(Color::Yellow))
+            } else {
+                Span::raw(" ")
+            };
+            let passed_span = if e.has_mark(Flag::Passed) {
+                Span::styled("→ ", Style::default().fg(Color::Yellow))
             } else {
                 Span::raw("  ")
             };
@@ -196,6 +201,7 @@ pub fn draw(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, view: &mut 
                 Span::styled(subject_padded, text_style),
                 Span::raw(" "),
                 replied_span,
+                passed_span,
                 Span::styled(
                     format!("{:<DATE_W$}", humanize_date(e.timestamp)),
                     Style::default().fg(Color::Cyan),
@@ -247,6 +253,17 @@ mod tests {
             PathBuf::from(format!("/mb/cur/{}:2,S", id))
         };
         Email::new(id, None, from, subject, Some(1_700_000_000), path)
+    }
+
+    fn make_email_with_flags(id: &str, flags: &str) -> Email {
+        Email::new(
+            id,
+            None,
+            "sender",
+            "Subject",
+            Some(1_700_000_000),
+            PathBuf::from(format!("/mb/cur/{}:2,{}", id, flags)),
+        )
     }
 
     fn thread(id: &str, from: &str, subject: &str, unread: bool) -> Rc<EmailThread> {
@@ -786,5 +803,49 @@ mod tests {
         assert!(content.contains("Bob"), "got:\n{content}");
         assert!(content.contains("First"), "got:\n{content}");
         assert!(content.contains("Second"), "got:\n{content}");
+    }
+
+    #[test]
+    fn draw_shows_replied_indicator() {
+        let email = make_email_with_flags("a", "RS");
+        let t = Rc::new(EmailThread {
+            parent: email,
+            replies: RefCell::new(vec![]),
+        });
+        let mut view = ThreadsView::new(tlist(vec![t]));
+        let content: String = rendered_lines(&mut view, 80, 3).join("\n");
+        assert!(
+            content.contains('↩'),
+            "replied indicator missing:\n{content}"
+        );
+    }
+
+    #[test]
+    fn draw_shows_passed_indicator() {
+        let email = make_email_with_flags("a", "PS");
+        let t = Rc::new(EmailThread {
+            parent: email,
+            replies: RefCell::new(vec![]),
+        });
+        let mut view = ThreadsView::new(tlist(vec![t]));
+        let content: String = rendered_lines(&mut view, 80, 3).join("\n");
+        assert!(
+            content.contains('→'),
+            "passed indicator missing:\n{content}"
+        );
+    }
+
+    #[test]
+    fn draw_shows_no_indicators_for_plain_email() {
+        let mut view = ThreadsView::new(tlist(vec![thread("a", "Alice", "Hello", false)]));
+        let content: String = rendered_lines(&mut view, 80, 3).join("\n");
+        assert!(
+            !content.contains('↩'),
+            "unexpected replied indicator:\n{content}"
+        );
+        assert!(
+            !content.contains('→'),
+            "unexpected passed indicator:\n{content}"
+        );
     }
 }
