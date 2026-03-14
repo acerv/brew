@@ -4,7 +4,7 @@ use crate::core::address::{Address, AddressBook};
 use crate::core::config::{self, Config, Smtp};
 use crate::core::maildir::{Maildir, SortOrder};
 use crate::core::thread::{Email, Flag};
-use crate::ui::compose::{self, EmailReply};
+use crate::ui::compose::{self, EmailCompose};
 use crate::ui::editor::{self, Editor};
 use crate::ui::email::{self, EmailView};
 use crate::ui::threads::{self, ThreadsView};
@@ -657,7 +657,7 @@ impl App {
             .get(self.current_mb)
             .is_some_and(|mb| mb.is_drafts());
         if is_drafts {
-            match compose::email_to_draft(&thread.parent) {
+            match thread.parent.to_draft() {
                 Ok(draft) => self.open_editor(draft, ComposeKind::New),
                 Err(e) => self.status_error = Some(e.to_string()),
             }
@@ -750,7 +750,7 @@ impl App {
             return;
         };
         let id = thread.parent.message_id.clone();
-        match compose::forward_draft(&thread.parent) {
+        match thread.parent.forward_draft() {
             Ok(draft) => self.open_editor(draft, ComposeKind::Forward(id)),
             Err(e) => self.status_error = Some(e.to_string()),
         }
@@ -765,7 +765,7 @@ impl App {
         match Email::from_file(&path) {
             Ok(email) => {
                 let id = email.message_id.clone();
-                match compose::forward_draft(&email) {
+                match email.forward_draft() {
                     Ok(draft) => self.open_editor(draft, ComposeKind::Forward(id)),
                     Err(e) => self.status_error = Some(e.to_string()),
                 }

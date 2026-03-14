@@ -105,83 +105,86 @@ pub fn compose_draft() -> String {
     draft
 }
 
-/// Convert an `Email` back into the internal draft text format so it can be
-/// re-opened in the compose editor.
-pub fn email_to_draft(email: &Email) -> Result<String> {
-    let msg = email.to_message()?;
-    let parse_addrs = |a: Option<&mail_parser::Address<'_>>| -> Vec<Address> {
-        a.map(|a| a.iter().map(Address::from).collect())
-            .unwrap_or_default()
-    };
-    let to = parse_addrs(msg.to())
-        .iter()
-        .map(|a| a.full())
-        .collect::<Vec<_>>()
-        .join(", ");
-    let cc = parse_addrs(msg.cc())
-        .iter()
-        .map(|a| a.full())
-        .collect::<Vec<_>>()
-        .join(", ");
-    let body = msg.body_text(0).map(|t| t.into_owned()).unwrap_or_default();
+/// Extension trait for `Email` covering all compose operations.
+pub trait EmailCompose {
+    /// Convert this email back into the internal draft text format so it can
+    /// be re-opened in the compose editor.
+    fn to_draft(&self) -> Result<String>;
 
-    let mut draft = format!("To: {to}\n");
-    if !cc.is_empty() {
-        draft.push_str(&format!("Cc: {cc}\n"));
-    }
-    draft.push_str(&format!("Subject: {}\n", email.subject));
-    if let Some(irt) = &email.reply_to {
-        draft.push_str(&format!("In-Reply-To: <{irt}>\n"));
-    }
-    draft.push_str(&format!("{BODY_SENTINEL}\n"));
-    draft.push_str(&body);
-    Ok(draft)
-}
+    /// Generate a forward draft — empty `To:`, `Fwd:` subject, original body
+    /// quoted with an attribution header.
+    fn forward_draft(&self) -> Result<String>;
 
-/// Generate a forward draft for `email` — empty `To:`, `Fwd:` subject,
-/// original body quoted with an attribution header.
-pub fn forward_draft(email: &Email) -> Result<String> {
-    let msg = email.to_message()?;
-
-    let subject = if email.subject.starts_with("Fwd:") || email.subject.starts_with("fwd:") {
-        email.subject.clone()
-    } else {
-        format!("Fwd: {}", email.subject)
-    };
-
-    let body = msg.body_text(0).map(|t| t.into_owned()).unwrap_or_default();
-
-    let mut draft = format!("To: \nSubject: {subject}\n{BODY_SENTINEL}\n");
-    draft.push_str(&format!(
-        "---------- Forwarded message ----------\nFrom: {}\nSubject: {}\n\n",
-        email.from.full(),
-        email.subject,
-    ));
-    for line in body.lines() {
-        draft.push_str(&format!("> {line}\n"));
-    }
-
-    if let Some(sig) = config::load_signature() {
-        draft.push_str(&format!("\n--\n{sig}\n"));
-    }
-
-    Ok(draft)
-}
-
-/// Extension trait for Email to generate reply drafts.
-pub trait EmailReply {
-    /// Generate a reply draft for this email.
+    /// Generate a reply draft.
     ///
-    /// The draft includes:
     /// - To: set to the original sender
-    /// - Cc: original To: + original Cc:, minus own_address
-    /// - Subject: with "Re:" prefix
+    /// - Cc: original To: + original Cc:, minus `own_address`
+    /// - Subject: prefixed with "Re:" unless already present
     /// - In-Reply-To: referencing this message
     /// - Body: optionally quoted with ">" prefix
     fn reply_draft(&self, quote: bool, own_address: &str) -> Result<String>;
 }
 
-impl EmailReply for Email {
+impl EmailCompose for Email {
+    fn to_draft(&self) -> Result<String> {
+        let msg = self.to_message()?;
+        let parse_addrs = |a: Option<&mail_parser::Address<'_>>| -> Vec<Address> {
+            a.map(|a| a.iter().map(Address::from).collect())
+                .unwrap_or_default()
+        };
+        let to = parse_addrs(msg.to())
+            .iter()
+            .map(|a| a.full())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let cc = parse_addrs(msg.cc())
+            .iter()
+            .map(|a| a.full())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let body = msg.body_text(0).map(|t| t.into_owned()).unwrap_or_default();
+
+        let mut draft = format!("To: {to}\n");
+        if !cc.is_empty() {
+            draft.push_str(&format!("Cc: {cc}\n"));
+        }
+        draft.push_str(&format!("Subject: {}\n", self.subject));
+        if let Some(irt) = &self.reply_to {
+            draft.push_str(&format!("In-Reply-To: <{irt}>\n"));
+        }
+        draft.push_str(&format!("{BODY_SENTINEL}\n"));
+        draft.push_str(&body);
+        Ok(draft)
+    }
+
+    fn forward_draft(&self) -> Result<String> {
+        let msg = self.to_message()?;
+
+        let subject = if self.subject.starts_with("Fwd:") || self.subject.starts_with("fwd:") {
+            self.subject.clone()
+        } else {
+            format!("Fwd: {}", self.subject)
+        };
+
+        let body = msg.body_text(0).map(|t| t.into_owned()).unwrap_or_default();
+
+        let mut draft = format!("To: \nSubject: {subject}\n{BODY_SENTINEL}\n");
+        draft.push_str(&format!(
+            "---------- Forwarded message ----------\nFrom: {}\nSubject: {}\n\n",
+            self.from.full(),
+            self.subject,
+        ));
+        for line in body.lines() {
+            draft.push_str(&format!("> {line}\n"));
+        }
+
+        if let Some(sig) = config::load_signature() {
+            draft.push_str(&format!("\n--\n{sig}\n"));
+        }
+
+        Ok(draft)
+    }
+
     fn reply_draft(&self, quote: bool, own_address: &str) -> Result<String> {
         let msg = self.to_message()?;
 
@@ -364,7 +367,7 @@ mod tests {
         let content = "Message-ID: <id@test>\r\nFrom: alice@x.com\r\nTo: bob@x.com\r\nSubject: Hello\r\nDate: Mon, 01 Jan 2024 00:00:00 +0000\r\n\r\nBody text\r\n";
         let path = write_tmp_email(content);
         let email = crate::core::thread::Email::from_file(&path).unwrap();
-        let draft = email_to_draft(&email).unwrap();
+        let draft = email.to_draft().unwrap();
         assert!(draft.contains("To: bob@x.com"), "got: {draft}");
         assert!(draft.contains("Subject: Hello"), "got: {draft}");
         let _ = std::fs::remove_file(&path);
@@ -375,7 +378,7 @@ mod tests {
         let content = "Message-ID: <id@test>\r\nFrom: alice@x.com\r\nTo: bob@x.com\r\nCc: carol@x.com\r\nSubject: Hi\r\nDate: Mon, 01 Jan 2024 00:00:00 +0000\r\n\r\nBody\r\n";
         let path = write_tmp_email(content);
         let email = crate::core::thread::Email::from_file(&path).unwrap();
-        let draft = email_to_draft(&email).unwrap();
+        let draft = email.to_draft().unwrap();
         assert!(draft.contains("Cc: carol@x.com"), "got: {draft}");
         let _ = std::fs::remove_file(&path);
     }
@@ -385,7 +388,7 @@ mod tests {
         let content = "Message-ID: <id@test>\r\nFrom: alice@x.com\r\nTo: bob@x.com\r\nSubject: Hi\r\nDate: Mon, 01 Jan 2024 00:00:00 +0000\r\n\r\nHello world\r\n";
         let path = write_tmp_email(content);
         let email = crate::core::thread::Email::from_file(&path).unwrap();
-        let draft = email_to_draft(&email).unwrap();
+        let draft = email.to_draft().unwrap();
         assert!(draft.contains("Hello world"), "got: {draft}");
         let _ = std::fs::remove_file(&path);
     }
@@ -396,7 +399,7 @@ mod tests {
         let rfc = Draft::parse(original).to_rfc2822("me@x.com");
         let path = write_tmp_email(&rfc);
         let email = crate::core::thread::Email::from_file(&path).unwrap();
-        let draft = email_to_draft(&email).unwrap();
+        let draft = email.to_draft().unwrap();
         assert!(draft.contains("To: alice@x.com"), "got: {draft}");
         assert!(draft.contains("Subject: Test"), "got: {draft}");
         assert!(draft.contains("Hi there"), "got: {draft}");
@@ -468,7 +471,7 @@ mod tests {
         let content = "Message-ID: <id@test>\r\nFrom: alice@x.com\r\nTo: bob@x.com\r\nSubject: Hello\r\nDate: Mon, 01 Jan 2024 00:00:00 +0000\r\n\r\nBody text\r\n";
         let path = write_tmp_email(content);
         let email = crate::core::thread::Email::from_file(&path).unwrap();
-        let draft = forward_draft(&email).unwrap();
+        let draft = email.forward_draft().unwrap();
         let to_line = draft.lines().find(|l| l.starts_with("To:")).unwrap_or("");
         assert_eq!(to_line, "To: ", "To: must be empty: {draft}");
         let _ = std::fs::remove_file(&path);
@@ -479,7 +482,7 @@ mod tests {
         let content = "Message-ID: <id@test>\r\nFrom: alice@x.com\r\nTo: bob@x.com\r\nSubject: Hello\r\nDate: Mon, 01 Jan 2024 00:00:00 +0000\r\n\r\nBody\r\n";
         let path = write_tmp_email(content);
         let email = crate::core::thread::Email::from_file(&path).unwrap();
-        let draft = forward_draft(&email).unwrap();
+        let draft = email.forward_draft().unwrap();
         assert!(
             draft.contains("Subject: Fwd: Hello"),
             "subject must have Fwd: prefix: {draft}"
@@ -492,7 +495,7 @@ mod tests {
         let content = "Message-ID: <id@test>\r\nFrom: alice@x.com\r\nTo: bob@x.com\r\nSubject: Fwd: Hello\r\nDate: Mon, 01 Jan 2024 00:00:00 +0000\r\n\r\nBody\r\n";
         let path = write_tmp_email(content);
         let email = crate::core::thread::Email::from_file(&path).unwrap();
-        let draft = forward_draft(&email).unwrap();
+        let draft = email.forward_draft().unwrap();
         assert!(
             !draft.contains("Fwd: Fwd:"),
             "subject must not double Fwd: prefix: {draft}"
@@ -505,7 +508,7 @@ mod tests {
         let content = "Message-ID: <id@test>\r\nFrom: alice@x.com\r\nTo: bob@x.com\r\nSubject: Hi\r\nDate: Mon, 01 Jan 2024 00:00:00 +0000\r\n\r\nOriginal body\r\n";
         let path = write_tmp_email(content);
         let email = crate::core::thread::Email::from_file(&path).unwrap();
-        let draft = forward_draft(&email).unwrap();
+        let draft = email.forward_draft().unwrap();
         assert!(
             draft.contains("> Original body"),
             "body must be quoted: {draft}"
@@ -518,7 +521,7 @@ mod tests {
         let content = "Message-ID: <id@test>\r\nFrom: Alice <alice@x.com>\r\nTo: bob@x.com\r\nSubject: Hi\r\nDate: Mon, 01 Jan 2024 00:00:00 +0000\r\n\r\nBody\r\n";
         let path = write_tmp_email(content);
         let email = crate::core::thread::Email::from_file(&path).unwrap();
-        let draft = forward_draft(&email).unwrap();
+        let draft = email.forward_draft().unwrap();
         assert!(
             draft.contains("Forwarded message"),
             "draft must contain attribution header: {draft}"
