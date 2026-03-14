@@ -16,7 +16,6 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use edtui::EditorMode;
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
@@ -333,12 +332,13 @@ impl App {
 
     fn handle_compose_tab_key(&mut self, key: KeyEvent, ei: usize) {
         let should_show_dialog = if let Tab::Compose(ref mut ed) = self.tabs[ei] {
-            if matches!(key.code, KeyCode::Char('q')) && ed.mode() == EditorMode::Normal {
-                true
-            } else {
-                ed.on_key(key);
-                ed.update_autocomplete(&self.address_book);
-                false
+            match (key.modifiers, key.code) {
+                (KeyModifiers::CONTROL, KeyCode::Char('q')) => true,
+                _ => {
+                    ed.on_key(key);
+                    ed.update_autocomplete(&self.address_book);
+                    false
+                }
             }
         } else {
             false

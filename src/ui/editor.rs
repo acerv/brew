@@ -165,15 +165,6 @@ impl Editor {
         &self.subject.value
     }
 
-    /// Return the current editor mode. For header fields, always "Insert".
-    pub fn mode(&self) -> EditorMode {
-        if self.focus == Focus::Body {
-            self.body_state.mode
-        } else {
-            EditorMode::Insert
-        }
-    }
-
     /// Handle a crossterm key event.
     pub fn on_key(&mut self, key: crossterm::event::KeyEvent) {
         use crossterm::event::{KeyCode, KeyModifiers};
@@ -429,6 +420,15 @@ fn draw_body(frame: &mut ratatui::Frame, area: Rect, editor: &mut Editor) {
         .theme(theme)
         .wrap(true);
     frame.render_widget(view, area);
+
+    // 80-column guide: highlight column 80 with a subtle background (no character, copy-safe)
+    if area.width > 80 {
+        let lines: Vec<Line> = std::iter::repeat_n(Line::from(" "), area.height as usize).collect();
+        frame.render_widget(
+            Paragraph::new(lines).style(Style::default().bg(Color::DarkGray)),
+            Rect::new(area.x + 80, area.y, 1, area.height),
+        );
+    }
 }
 
 fn draw_autocomplete(frame: &mut ratatui::Frame, header_area: Rect, editor: &Editor) {
