@@ -23,7 +23,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Tabs},
+    widgets::{Block, Borders, LineGauge, List, ListItem, ListState, Paragraph, Tabs},
 };
 use std::io;
 use std::sync::mpsc;
@@ -71,7 +71,16 @@ impl App {
         let mut threads = Vec::new();
         let clipboard = Clipboard::new().ok();
 
-        for mb in &config.mailboxes {
+        enable_raw_mode()?;
+        let mut stdout = io::stdout();
+        execute!(stdout, EnterAlternateScreen)?;
+        let backend = CrosstermBackend::new(stdout);
+        let mut terminal = Terminal::new(backend)?;
+
+        let total = config.mailboxes.len();
+        for (i, mb) in config.mailboxes.iter().enumerate() {
+            let label = mb.label.as_str();
+            terminal.draw(|frame| draw_startup(frame, label, i, total))?;
             let maildir = Maildir::new(&mb.path).unwrap_or_default();
             let tv = ThreadsView::new(maildir.threads());
             maildirs.push(maildir);
@@ -86,12 +95,6 @@ impl App {
             }
         }
         address_book.harvest(&addrs);
-
-        enable_raw_mode()?;
-        let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen)?;
-        let backend = CrosstermBackend::new(stdout);
-        let terminal = Terminal::new(backend)?;
 
         let mut sidebar_state = ListState::default();
         if !config.mailboxes.is_empty() {
@@ -760,6 +763,33 @@ impl App {
         self.maildirs[target_mb_idx].sync();
         self.threads[target_mb_idx].invalidate();
     }
+}
+
+fn draw_startup(frame: &mut ratatui::Frame, label: &str, current: usize, total: usize) {
+    let area = frame.area();
+    let w = 50u16.min(area.width);
+    let x = area.width.saturating_sub(w) / 2;
+    let y = area.height / 2;
+
+    let ratio = if total == 0 {
+        1.0
+    } else {
+        (current + 1) as f64 / total as f64
+    };
+    let pct = (ratio * 100.0) as u16;
+
+    frame.render_widget(
+        Paragraph::new(format!(" {label}")).style(Style::default().fg(Color::DarkGray)),
+        ratatui::layout::Rect::new(x, y, w, 1),
+    );
+    frame.render_widget(
+        LineGauge::default()
+            .filled_style(Style::default().fg(Color::Cyan))
+            .unfilled_style(Style::default().fg(Color::DarkGray))
+            .ratio(ratio)
+            .label(format!("{pct}%")),
+        ratatui::layout::Rect::new(x, y + 1, w, 1),
+    );
 }
 
 fn draw(frame: &mut ratatui::Frame, app: &mut App) {
