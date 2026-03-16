@@ -230,8 +230,63 @@ impl Editor {
             Focus::To => self.to.on_key(key),
             Focus::Cc => self.cc.on_key(key),
             Focus::Subject => self.subject.on_key(key),
-            Focus::Body => self.body_handler.on_key_event(key, &mut self.body_state),
+            Focus::Body => {
+                use crossterm::event::KeyCode;
+                if self.body_state.mode == EditorMode::Normal {
+                    match key.code {
+                        KeyCode::Char('}') => {
+                            self.move_next_paragraph();
+                            return;
+                        }
+                        KeyCode::Char('{') => {
+                            self.move_prev_paragraph();
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
+                self.body_handler.on_key_event(key, &mut self.body_state);
+            }
         }
+    }
+
+    fn is_blank_line(&self, row: usize) -> bool {
+        self.body_state
+            .lines
+            .get(RowIndex::new(row))
+            .map(|l| l.iter().all(|c| c.is_whitespace()))
+            .unwrap_or(true)
+    }
+
+    fn move_next_paragraph(&mut self) {
+        let total = self.body_state.lines.len();
+        let mut row = self.body_state.cursor.row;
+        // skip current non-blank lines
+        while row < total && !self.is_blank_line(row) {
+            row += 1;
+        }
+        // skip blank lines
+        while row < total && self.is_blank_line(row) {
+            row += 1;
+        }
+        self.body_state.cursor = Index2::new(row.min(total.saturating_sub(1)), 0);
+    }
+
+    fn move_prev_paragraph(&mut self) {
+        let row = self.body_state.cursor.row;
+        if row == 0 {
+            return;
+        }
+        let mut r = row.saturating_sub(1);
+        // skip blank lines going back
+        while r > 0 && self.is_blank_line(r) {
+            r -= 1;
+        }
+        // skip non-blank lines going back to find start of paragraph
+        while r > 0 && !self.is_blank_line(r - 1) {
+            r -= 1;
+        }
+        self.body_state.cursor = Index2::new(r, 0);
     }
 
     /// Reassemble the full draft text from header fields + body.
@@ -470,4 +525,121 @@ fn draw_autocomplete(frame: &mut ratatui::Frame, header_area: Rect, editor: &Edi
         .highlight_style(Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED));
 
     frame.render_stateful_widget(list, dropdown_area, &mut list_state);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }
+    }
+
+    /// Build an editor whose body contains the given text and focus on the body
+    /// in Normal mode with the cursor on the given row.
+    fn editor_at(body: &str, row: usize) -> Editor {
+        let draft = format!("To: \nSubject: \n--- body ---\n{body}");
+        let mut ed = Editor::new(&draft);
+        ed.focus = Focus::Body;
+        ed.body_state.cursor = Index2::new(row, 0);
+        ed
+    }
+
+    // ── next paragraph (}) ──────────────────────────────────────────────────
+
+    #[test]
+    fn next_paragraph_jumps_over_blank_to_next_para() {
+        // para 0: rows 0-1, blank: row 2, para 1: rows 3-4
+        let mut ed = editor_at("line1\nline2\n\nline3\nline4", 0);
+        ed.on_key(key(KeyCode::Char('}')));
+        assert_eq!(ed.body_state.cursor.row, 3);
+    }
+
+    #[test]
+    fn next_paragraph_from_middle_of_paragraph() {
+        let mut ed = editor_at("line1\nline2\n\nline3\nline4", 1);
+        ed.on_key(key(KeyCode::Char('}')));
+        assert_eq!(ed.body_state.cursor.row, 3);
+    }
+
+    #[test]
+    fn next_paragraph_skips_multiple_blank_lines() {
+        let mut ed = editor_at("para1\n\n\n\npara2", 0);
+        ed.on_key(key(KeyCode::Char('}')));
+        assert_eq!(ed.body_state.cursor.row, 4);
+    }
+
+    #[test]
+    fn next_paragraph_at_last_paragraph_stays_on_last_line() {
+        let mut ed = editor_at("only\nline", 0);
+        ed.on_key(key(KeyCode::Char('}')));
+        assert_eq!(ed.body_state.cursor.row, 1); // last line
+    }
+
+    #[test]
+    fn next_paragraph_multiple_jumps() {
+        let mut ed = editor_at("a\n\nb\n\nc", 0);
+        ed.on_key(key(KeyCode::Char('}')));
+        assert_eq!(ed.body_state.cursor.row, 2); // "b"
+        ed.on_key(key(KeyCode::Char('}')));
+        assert_eq!(ed.body_state.cursor.row, 4); // "c"
+    }
+
+    // ── prev paragraph ({) ──────────────────────────────────────────────────
+
+    #[test]
+    fn prev_paragraph_jumps_to_start_of_previous_para() {
+        // para 0: rows 0-1, blank: row 2, para 1: rows 3-4
+        let mut ed = editor_at("line1\nline2\n\nline3\nline4", 4);
+        ed.on_key(key(KeyCode::Char('{')));
+        assert_eq!(ed.body_state.cursor.row, 3);
+    }
+
+    #[test]
+    fn prev_paragraph_from_start_of_para_jumps_to_previous_para_start() {
+        let mut ed = editor_at("line1\nline2\n\nline3\nline4", 3);
+        ed.on_key(key(KeyCode::Char('{')));
+        assert_eq!(ed.body_state.cursor.row, 0);
+    }
+
+    #[test]
+    fn prev_paragraph_at_first_line_stays() {
+        let mut ed = editor_at("line1\nline2", 0);
+        ed.on_key(key(KeyCode::Char('{')));
+        assert_eq!(ed.body_state.cursor.row, 0);
+    }
+
+    #[test]
+    fn prev_paragraph_skips_multiple_blank_lines() {
+        let mut ed = editor_at("para1\n\n\n\npara2", 4);
+        ed.on_key(key(KeyCode::Char('{')));
+        assert_eq!(ed.body_state.cursor.row, 0);
+    }
+
+    #[test]
+    fn prev_paragraph_multiple_jumps() {
+        let mut ed = editor_at("a\n\nb\n\nc", 4);
+        ed.on_key(key(KeyCode::Char('{')));
+        assert_eq!(ed.body_state.cursor.row, 2); // "b"
+        ed.on_key(key(KeyCode::Char('{')));
+        assert_eq!(ed.body_state.cursor.row, 0); // "a"
+    }
+
+    // ── insert mode passthrough ──────────────────────────────────────────────
+
+    #[test]
+    fn braces_insert_character_in_insert_mode() {
+        let mut ed = editor_at("hello", 0);
+        ed.body_state.mode = EditorMode::Insert;
+        let row_before = ed.body_state.cursor.row;
+        ed.on_key(key(KeyCode::Char('}')));
+        // cursor row must not have jumped to a paragraph boundary
+        assert_eq!(ed.body_state.cursor.row, row_before);
+    }
 }
