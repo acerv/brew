@@ -127,6 +127,15 @@ pub struct AddressBook {
     path: std::path::PathBuf,
 }
 
+impl Default for AddressBook {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+            path: std::path::PathBuf::new(),
+        }
+    }
+}
+
 impl AddressBook {
     /// Load the address book from `~/.config/brew/addresses`.
     /// Returns an empty book if the file doesn't exist.
