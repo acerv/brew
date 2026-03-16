@@ -14,7 +14,7 @@ use ratatui::{
 };
 
 /// Which part of the compose view is focused.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 enum Focus {
     To,
     Cc,
@@ -530,6 +530,7 @@ fn draw_autocomplete(frame: &mut ratatui::Frame, header_area: Rect, editor: &Edi
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::address::{Address, AddressBook};
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -541,8 +542,20 @@ mod tests {
         }
     }
 
-    /// Build an editor whose body contains the given text and focus on the body
-    /// in Normal mode with the cursor on the given row.
+    fn ctrl(code: KeyCode) -> KeyEvent {
+        KeyEvent {
+            code,
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }
+    }
+
+    fn make_editor(draft: &str) -> Editor {
+        Editor::new(draft)
+    }
+
+    /// Build an editor focused on the body in Normal mode at the given row.
     fn editor_at(body: &str, row: usize) -> Editor {
         let draft = format!("To: \nSubject: \n--- body ---\n{body}");
         let mut ed = Editor::new(&draft);
@@ -551,11 +564,379 @@ mod tests {
         ed
     }
 
+    // ── new / parsing ────────────────────────────────────────────────────────
+
+    #[test]
+    fn new_parses_to_field() {
+        let ed = make_editor("To: alice@x.com\nSubject: Hi\n--- body ---\n");
+        assert_eq!(ed.to.value, "alice@x.com");
+    }
+
+    #[test]
+    fn new_parses_cc_field() {
+        let ed = make_editor("To: \nCc: bob@x.com\nSubject: Hi\n--- body ---\n");
+        assert_eq!(ed.cc.value, "bob@x.com");
+    }
+
+    #[test]
+    fn new_parses_subject_field() {
+        let ed = make_editor("To: \nSubject: Hello there\n--- body ---\n");
+        assert_eq!(ed.subject.value, "Hello there");
+    }
+
+    #[test]
+    fn new_parses_in_reply_to() {
+        let ed = make_editor("To: \nSubject: \nIn-Reply-To: <id@x.com>\n--- body ---\n");
+        assert_eq!(ed.in_reply_to.as_deref(), Some("<id@x.com>"));
+    }
+
+    #[test]
+    fn new_parses_body_after_sentinel() {
+        let ed = make_editor("To: \nSubject: \n--- body ---\nHello world");
+        assert_eq!(ed.body_state.lines.to_string(), "Hello world");
+    }
+
+    #[test]
+    fn new_body_empty_when_no_sentinel() {
+        let ed = make_editor("To: alice@x.com\nSubject: Hi\n");
+        assert_eq!(ed.body_state.lines.to_string(), "");
+    }
+
+    #[test]
+    fn new_missing_fields_are_empty() {
+        let ed = make_editor("--- body ---\n");
+        assert_eq!(ed.to.value, "");
+        assert_eq!(ed.cc.value, "");
+        assert_eq!(ed.subject.value, "");
+        assert!(ed.in_reply_to.is_none());
+    }
+
+    #[test]
+    fn new_focus_starts_at_to() {
+        let ed = make_editor("To: \nSubject: \n--- body ---\n");
+        assert_eq!(ed.focus, Focus::To);
+    }
+
+    // ── title ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn title_returns_subject_value() {
+        let ed = make_editor("To: \nSubject: My Subject\n--- body ---\n");
+        assert_eq!(ed.title(), "My Subject");
+    }
+
+    #[test]
+    fn title_empty_when_no_subject() {
+        let ed = make_editor("--- body ---\n");
+        assert_eq!(ed.title(), "");
+    }
+
+    // ── text / roundtrip ─────────────────────────────────────────────────────
+
+    #[test]
+    fn text_contains_to_and_subject() {
+        let ed = make_editor("To: alice@x.com\nSubject: Hi\n--- body ---\n");
+        let t = ed.text();
+        assert!(t.contains("To: alice@x.com"), "got: {t}");
+        assert!(t.contains("Subject: Hi"), "got: {t}");
+    }
+
+    #[test]
+    fn text_omits_cc_when_empty() {
+        let ed = make_editor("To: a@x.com\nSubject: Hi\n--- body ---\n");
+        assert!(!ed.text().contains("Cc:"));
+    }
+
+    #[test]
+    fn text_includes_cc_when_present() {
+        let ed = make_editor("To: a@x.com\nCc: b@x.com\nSubject: Hi\n--- body ---\n");
+        assert!(ed.text().contains("Cc: b@x.com"));
+    }
+
+    #[test]
+    fn text_includes_in_reply_to_when_present() {
+        let ed = make_editor("To: \nSubject: \nIn-Reply-To: <id@x.com>\n--- body ---\n");
+        assert!(ed.text().contains("In-Reply-To: <id@x.com>"));
+    }
+
+    #[test]
+    fn text_contains_body_sentinel() {
+        let ed = make_editor("To: \nSubject: \n--- body ---\n");
+        assert!(ed.text().contains("--- body ---"));
+    }
+
+    #[test]
+    fn text_roundtrip_preserves_fields() {
+        let original = "To: alice@x.com\nSubject: Test\n--- body ---\nHi there";
+        let ed = make_editor(original);
+        let out = ed.text();
+        let ed2 = make_editor(&out);
+        assert_eq!(ed2.to.value, "alice@x.com");
+        assert_eq!(ed2.subject.value, "Test");
+        assert_eq!(ed2.body_state.lines.to_string(), "Hi there");
+    }
+
+    // ── Tab / BackTab focus cycling ──────────────────────────────────────────
+
+    #[test]
+    fn tab_cycles_to_cc_subject_body_to() {
+        let mut ed = make_editor("To: \nSubject: \n--- body ---\n");
+        assert_eq!(ed.focus, Focus::To);
+        ed.on_key(key(KeyCode::Tab));
+        assert_eq!(ed.focus, Focus::Cc);
+        ed.on_key(key(KeyCode::Tab));
+        assert_eq!(ed.focus, Focus::Subject);
+        ed.on_key(key(KeyCode::Tab));
+        assert_eq!(ed.focus, Focus::Body);
+        ed.on_key(key(KeyCode::Tab));
+        assert_eq!(ed.focus, Focus::To);
+    }
+
+    #[test]
+    fn backtab_cycles_to_body_subject_cc_to() {
+        let mut ed = make_editor("To: \nSubject: \n--- body ---\n");
+        assert_eq!(ed.focus, Focus::To);
+        ed.on_key(key(KeyCode::BackTab));
+        assert_eq!(ed.focus, Focus::Body);
+        ed.on_key(key(KeyCode::BackTab));
+        assert_eq!(ed.focus, Focus::Subject);
+        ed.on_key(key(KeyCode::BackTab));
+        assert_eq!(ed.focus, Focus::Cc);
+        ed.on_key(key(KeyCode::BackTab));
+        assert_eq!(ed.focus, Focus::To);
+    }
+
+    #[test]
+    fn tab_in_body_insert_mode_does_not_cycle_focus() {
+        let mut ed = make_editor("To: \nSubject: \n--- body ---\n");
+        ed.focus = Focus::Body;
+        ed.body_state.mode = EditorMode::Insert;
+        ed.on_key(key(KeyCode::Tab));
+        assert_eq!(ed.focus, Focus::Body);
+    }
+
+    #[test]
+    fn tab_in_body_normal_mode_cycles_focus() {
+        let mut ed = make_editor("To: \nSubject: \n--- body ---\n");
+        ed.focus = Focus::Body;
+        ed.body_state.mode = EditorMode::Normal;
+        ed.on_key(key(KeyCode::Tab));
+        assert_eq!(ed.focus, Focus::To);
+    }
+
+    // ── header field editing ─────────────────────────────────────────────────
+
+    #[test]
+    fn typing_in_to_field_appends_text() {
+        let mut ed = make_editor("To: \nSubject: \n--- body ---\n");
+        ed.on_key(key(KeyCode::Char('a')));
+        ed.on_key(key(KeyCode::Char('b')));
+        assert_eq!(ed.to.value, "ab");
+    }
+
+    #[test]
+    fn backspace_in_to_field_removes_last_char() {
+        let mut ed = make_editor("To: hi\nSubject: \n--- body ---\n");
+        ed.on_key(key(KeyCode::Backspace));
+        assert_eq!(ed.to.value, "h");
+    }
+
+    #[test]
+    fn delete_in_to_field_removes_char_at_cursor() {
+        let mut ed = make_editor("To: ab\nSubject: \n--- body ---\n");
+        ed.to.cursor = 0;
+        ed.on_key(key(KeyCode::Delete));
+        assert_eq!(ed.to.value, "b");
+    }
+
+    #[test]
+    fn left_moves_cursor_left_in_header() {
+        let mut ed = make_editor("To: ab\nSubject: \n--- body ---\n");
+        let before = ed.to.cursor;
+        ed.on_key(key(KeyCode::Left));
+        assert!(ed.to.cursor < before);
+    }
+
+    #[test]
+    fn right_moves_cursor_right_in_header() {
+        let mut ed = make_editor("To: ab\nSubject: \n--- body ---\n");
+        ed.to.cursor = 0;
+        ed.on_key(key(KeyCode::Right));
+        assert_eq!(ed.to.cursor, 1);
+    }
+
+    #[test]
+    fn home_moves_cursor_to_start_of_header() {
+        let mut ed = make_editor("To: abc\nSubject: \n--- body ---\n");
+        ed.on_key(key(KeyCode::Home));
+        assert_eq!(ed.to.cursor, 0);
+    }
+
+    #[test]
+    fn end_moves_cursor_to_end_of_header() {
+        let mut ed = make_editor("To: abc\nSubject: \n--- body ---\n");
+        ed.to.cursor = 0;
+        ed.on_key(key(KeyCode::End));
+        assert_eq!(ed.to.cursor, ed.to.value.len());
+    }
+
+    #[test]
+    fn typing_in_cc_field_works() {
+        let mut ed = make_editor("To: \nSubject: \n--- body ---\n");
+        ed.focus = Focus::Cc;
+        ed.on_key(key(KeyCode::Char('x')));
+        assert_eq!(ed.cc.value, "x");
+    }
+
+    #[test]
+    fn typing_in_subject_field_works() {
+        let mut ed = make_editor("To: \nSubject: \n--- body ---\n");
+        ed.focus = Focus::Subject;
+        ed.on_key(key(KeyCode::Char('H')));
+        ed.on_key(key(KeyCode::Char('i')));
+        assert_eq!(ed.subject.value, "Hi");
+    }
+
+    // ── Ctrl+C ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn ctrl_c_in_body_insert_mode_switches_to_normal() {
+        let mut ed = make_editor("To: \nSubject: \n--- body ---\n");
+        ed.focus = Focus::Body;
+        ed.body_state.mode = EditorMode::Insert;
+        ed.on_key(ctrl(KeyCode::Char('c')));
+        assert_eq!(ed.body_state.mode, EditorMode::Normal);
+    }
+
+    #[test]
+    fn ctrl_c_clears_suggestions() {
+        let mut ed = make_editor("To: \nSubject: \n--- body ---\n");
+        ed.suggestions = vec!["alice@x.com".to_string()];
+        ed.on_key(ctrl(KeyCode::Char('c')));
+        assert!(ed.suggestions.is_empty());
+    }
+
+    // ── autocomplete ─────────────────────────────────────────────────────────
+
+    fn make_book(entries: &[&str]) -> AddressBook {
+        let mut book = AddressBook::default();
+        let addrs: Vec<Address> = entries.iter().map(|s| Address::new("", s)).collect();
+        book.harvest(&addrs);
+        book
+    }
+
+    #[test]
+    fn update_autocomplete_short_query_yields_no_suggestions() {
+        let mut ed = make_editor("To: a\nSubject: \n--- body ---\n");
+        let book = make_book(&["alice@x.com"]);
+        ed.update_autocomplete(&book);
+        assert!(ed.suggestions.is_empty());
+    }
+
+    #[test]
+    fn update_autocomplete_matching_query_yields_suggestions() {
+        let mut ed = make_editor("To: ali\nSubject: \n--- body ---\n");
+        let book = make_book(&["alice@x.com"]);
+        ed.update_autocomplete(&book);
+        assert!(!ed.suggestions.is_empty());
+        assert!(ed.suggestions[0].contains("alice@x.com"));
+    }
+
+    #[test]
+    fn update_autocomplete_only_for_to_and_cc() {
+        let mut ed = make_editor("To: \nSubject: alice\n--- body ---\n");
+        ed.focus = Focus::Subject;
+        let book = make_book(&["alice@x.com"]);
+        ed.update_autocomplete(&book);
+        assert!(ed.suggestions.is_empty());
+    }
+
+    #[test]
+    fn autocomplete_down_advances_selection() {
+        let mut ed = make_editor("To: ali\nSubject: \n--- body ---\n");
+        ed.suggestions = vec!["alice@x.com".to_string(), "alicia@x.com".to_string()];
+        ed.ac_selected = 0;
+        ed.on_key(key(KeyCode::Down));
+        assert_eq!(ed.ac_selected, 1);
+    }
+
+    #[test]
+    fn autocomplete_down_clamps_at_last() {
+        let mut ed = make_editor("To: ali\nSubject: \n--- body ---\n");
+        ed.suggestions = vec!["a".to_string(), "b".to_string()];
+        ed.ac_selected = 1;
+        ed.on_key(key(KeyCode::Down));
+        assert_eq!(ed.ac_selected, 1);
+    }
+
+    #[test]
+    fn autocomplete_up_decreases_selection() {
+        let mut ed = make_editor("To: ali\nSubject: \n--- body ---\n");
+        ed.suggestions = vec!["a".to_string(), "b".to_string()];
+        ed.ac_selected = 1;
+        ed.on_key(key(KeyCode::Up));
+        assert_eq!(ed.ac_selected, 0);
+    }
+
+    #[test]
+    fn autocomplete_up_clamps_at_zero() {
+        let mut ed = make_editor("To: ali\nSubject: \n--- body ---\n");
+        ed.suggestions = vec!["a".to_string()];
+        ed.ac_selected = 0;
+        ed.on_key(key(KeyCode::Up));
+        assert_eq!(ed.ac_selected, 0);
+    }
+
+    #[test]
+    fn autocomplete_esc_clears_suggestions() {
+        let mut ed = make_editor("To: ali\nSubject: \n--- body ---\n");
+        ed.suggestions = vec!["alice@x.com".to_string()];
+        ed.on_key(key(KeyCode::Esc));
+        assert!(ed.suggestions.is_empty());
+    }
+
+    #[test]
+    fn autocomplete_enter_accepts_suggestion_into_to() {
+        let mut ed = make_editor("To: ali\nSubject: \n--- body ---\n");
+        ed.suggestions = vec!["alice@x.com".to_string()];
+        ed.ac_selected = 0;
+        ed.on_key(key(KeyCode::Enter));
+        assert!(ed.to.value.contains("alice@x.com"));
+        assert!(ed.suggestions.is_empty());
+    }
+
+    #[test]
+    fn autocomplete_any_other_key_clears_suggestions() {
+        let mut ed = make_editor("To: ali\nSubject: \n--- body ---\n");
+        ed.suggestions = vec!["alice@x.com".to_string()];
+        ed.on_key(key(KeyCode::Char('z')));
+        assert!(ed.suggestions.is_empty());
+    }
+
+    #[test]
+    fn accept_suggestion_replaces_fragment_after_comma() {
+        let mut ed = make_editor("To: bob@x.com, ali\nSubject: \n--- body ---\n");
+        ed.suggestions = vec!["alice@x.com".to_string()];
+        ed.ac_selected = 0;
+        ed.on_key(key(KeyCode::Enter));
+        assert!(ed.to.value.starts_with("bob@x.com,"));
+        assert!(ed.to.value.contains("alice@x.com"));
+    }
+
+    #[test]
+    fn accept_suggestion_replaces_whole_value_without_comma() {
+        let mut ed = make_editor("To: ali\nSubject: \n--- body ---\n");
+        ed.suggestions = vec!["alice@x.com".to_string()];
+        ed.ac_selected = 0;
+        ed.on_key(key(KeyCode::Enter));
+        assert!(!ed.to.value.contains("ali,"));
+        assert!(ed.to.value.contains("alice@x.com"));
+    }
+
     // ── next paragraph (}) ──────────────────────────────────────────────────
 
     #[test]
     fn next_paragraph_jumps_over_blank_to_next_para() {
-        // para 0: rows 0-1, blank: row 2, para 1: rows 3-4
         let mut ed = editor_at("line1\nline2\n\nline3\nline4", 0);
         ed.on_key(key(KeyCode::Char('}')));
         assert_eq!(ed.body_state.cursor.row, 3);
@@ -579,23 +960,22 @@ mod tests {
     fn next_paragraph_at_last_paragraph_stays_on_last_line() {
         let mut ed = editor_at("only\nline", 0);
         ed.on_key(key(KeyCode::Char('}')));
-        assert_eq!(ed.body_state.cursor.row, 1); // last line
+        assert_eq!(ed.body_state.cursor.row, 1);
     }
 
     #[test]
     fn next_paragraph_multiple_jumps() {
         let mut ed = editor_at("a\n\nb\n\nc", 0);
         ed.on_key(key(KeyCode::Char('}')));
-        assert_eq!(ed.body_state.cursor.row, 2); // "b"
+        assert_eq!(ed.body_state.cursor.row, 2);
         ed.on_key(key(KeyCode::Char('}')));
-        assert_eq!(ed.body_state.cursor.row, 4); // "c"
+        assert_eq!(ed.body_state.cursor.row, 4);
     }
 
     // ── prev paragraph ({) ──────────────────────────────────────────────────
 
     #[test]
-    fn prev_paragraph_jumps_to_start_of_previous_para() {
-        // para 0: rows 0-1, blank: row 2, para 1: rows 3-4
+    fn prev_paragraph_jumps_to_start_of_current_para() {
         let mut ed = editor_at("line1\nline2\n\nline3\nline4", 4);
         ed.on_key(key(KeyCode::Char('{')));
         assert_eq!(ed.body_state.cursor.row, 3);
@@ -626,20 +1006,19 @@ mod tests {
     fn prev_paragraph_multiple_jumps() {
         let mut ed = editor_at("a\n\nb\n\nc", 4);
         ed.on_key(key(KeyCode::Char('{')));
-        assert_eq!(ed.body_state.cursor.row, 2); // "b"
+        assert_eq!(ed.body_state.cursor.row, 2);
         ed.on_key(key(KeyCode::Char('{')));
-        assert_eq!(ed.body_state.cursor.row, 0); // "a"
+        assert_eq!(ed.body_state.cursor.row, 0);
     }
 
     // ── insert mode passthrough ──────────────────────────────────────────────
 
     #[test]
-    fn braces_insert_character_in_insert_mode() {
+    fn braces_type_normally_in_insert_mode() {
         let mut ed = editor_at("hello", 0);
         ed.body_state.mode = EditorMode::Insert;
         let row_before = ed.body_state.cursor.row;
         ed.on_key(key(KeyCode::Char('}')));
-        // cursor row must not have jumped to a paragraph boundary
         assert_eq!(ed.body_state.cursor.row, row_before);
     }
 }
