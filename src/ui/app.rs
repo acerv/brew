@@ -255,7 +255,7 @@ impl App {
             (KeyModifiers::CONTROL, KeyCode::Char('s')) => self.trigger_sync(),
             (_, KeyCode::Char(' ')) => self.toggle_flagged_thread(),
             (_, KeyCode::Char('D')) => self.delete_selected_thread(),
-            (_, KeyCode::Char('N')) => {
+            (_, KeyCode::Char('V')) => {
                 if let Some(tv) = self.threads.get_mut(self.current_mb) {
                     tv.toggle_unread();
                 }
