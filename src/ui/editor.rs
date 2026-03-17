@@ -232,7 +232,10 @@ impl Editor {
             Focus::Subject => self.subject.on_key(key),
             Focus::Body => {
                 use crossterm::event::KeyCode;
-                if self.body_state.mode == EditorMode::Normal {
+                if matches!(
+                    self.body_state.mode,
+                    EditorMode::Normal | EditorMode::Visual
+                ) {
                     match key.code {
                         KeyCode::Char('}') => {
                             self.move_next_paragraph();
@@ -261,15 +264,21 @@ impl Editor {
     fn move_next_paragraph(&mut self) {
         let total = self.body_state.lines.len();
         let mut row = self.body_state.cursor.row;
-        // skip current non-blank lines
-        while row < total && !self.is_blank_line(row) {
-            row += 1;
-        }
-        // skip blank lines
+        // skip blank lines at current position
         while row < total && self.is_blank_line(row) {
             row += 1;
         }
+        // skip non-blank lines
+        while row < total && !self.is_blank_line(row) {
+            row += 1;
+        }
+        // stop at first blank line (paragraph boundary)
         self.body_state.cursor = Index2::new(row.min(total.saturating_sub(1)), 0);
+        if self.body_state.mode == EditorMode::Visual {
+            if let Some(sel) = &mut self.body_state.selection {
+                sel.end = self.body_state.cursor;
+            }
+        }
     }
 
     fn move_prev_paragraph(&mut self) {
@@ -278,15 +287,27 @@ impl Editor {
             return;
         }
         let mut r = row.saturating_sub(1);
-        // skip blank lines going back
-        while r > 0 && self.is_blank_line(r) {
-            r -= 1;
+        if self.is_blank_line(row) {
+            // on a blank line: skip blanks going back, then skip non-blanks, stop at blank
+            while r > 0 && self.is_blank_line(r) {
+                r -= 1;
+            }
+            while r > 0 && !self.is_blank_line(r) {
+                r -= 1;
+            }
+        } else {
+            // on a non-blank line: skip non-blanks going back, stop at first blank
+            while r > 0 && !self.is_blank_line(r) {
+                r -= 1;
+            }
         }
-        // skip non-blank lines going back to find start of paragraph
-        while r > 0 && !self.is_blank_line(r - 1) {
-            r -= 1;
-        }
+        // stop at first blank line (paragraph boundary), or line 0
         self.body_state.cursor = Index2::new(r, 0);
+        if self.body_state.mode == EditorMode::Visual {
+            if let Some(sel) = &mut self.body_state.selection {
+                sel.end = self.body_state.cursor;
+            }
+        }
     }
 
     /// Reassemble the full draft text from header fields + body.
@@ -936,24 +957,35 @@ mod tests {
     // ── next paragraph (}) ──────────────────────────────────────────────────
 
     #[test]
-    fn next_paragraph_jumps_over_blank_to_next_para() {
+    fn next_paragraph_stops_at_blank_line() {
+        // from non-blank, stop at the blank separator
         let mut ed = editor_at("line1\nline2\n\nline3\nline4", 0);
         ed.on_key(key(KeyCode::Char('}')));
-        assert_eq!(ed.body_state.cursor.row, 3);
+        assert_eq!(ed.body_state.cursor.row, 2);
     }
 
     #[test]
-    fn next_paragraph_from_middle_of_paragraph() {
+    fn next_paragraph_from_blank_skips_blanks_then_stops_at_next_blank() {
+        // from a blank line, skip blanks, skip para, stop at next blank
+        let mut ed = editor_at("line1\nline2\n\nline3\nline4\n\nline5", 2);
+        ed.on_key(key(KeyCode::Char('}')));
+        assert_eq!(ed.body_state.cursor.row, 5);
+    }
+
+    #[test]
+    fn next_paragraph_from_middle_of_paragraph_stops_at_blank() {
         let mut ed = editor_at("line1\nline2\n\nline3\nline4", 1);
         ed.on_key(key(KeyCode::Char('}')));
-        assert_eq!(ed.body_state.cursor.row, 3);
+        assert_eq!(ed.body_state.cursor.row, 2);
     }
 
     #[test]
-    fn next_paragraph_skips_multiple_blank_lines() {
-        let mut ed = editor_at("para1\n\n\n\npara2", 0);
+    fn next_paragraph_skips_multiple_blank_lines_from_blank() {
+        // rows: 0=para1, 1=blank, 2=blank, 3=blank, 4=para2, 5=blank, 6=more
+        // starting on a blank, skip all blanks, skip para2, stop at blank (row 5)
+        let mut ed = editor_at("para1\n\n\n\npara2\n\nmore", 1);
         ed.on_key(key(KeyCode::Char('}')));
-        assert_eq!(ed.body_state.cursor.row, 4);
+        assert_eq!(ed.body_state.cursor.row, 5);
     }
 
     #[test]
@@ -965,27 +997,30 @@ mod tests {
 
     #[test]
     fn next_paragraph_multiple_jumps() {
+        // a(0) blank(1) b(2) blank(3) c(4)
         let mut ed = editor_at("a\n\nb\n\nc", 0);
         ed.on_key(key(KeyCode::Char('}')));
-        assert_eq!(ed.body_state.cursor.row, 2);
+        assert_eq!(ed.body_state.cursor.row, 1); // first blank
         ed.on_key(key(KeyCode::Char('}')));
-        assert_eq!(ed.body_state.cursor.row, 4);
+        assert_eq!(ed.body_state.cursor.row, 3); // second blank
     }
 
     // ── prev paragraph ({) ──────────────────────────────────────────────────
 
     #[test]
-    fn prev_paragraph_jumps_to_start_of_current_para() {
+    fn prev_paragraph_from_non_blank_stops_at_blank() {
+        // from last para, stop at blank separator
         let mut ed = editor_at("line1\nline2\n\nline3\nline4", 4);
         ed.on_key(key(KeyCode::Char('{')));
-        assert_eq!(ed.body_state.cursor.row, 3);
+        assert_eq!(ed.body_state.cursor.row, 2);
     }
 
     #[test]
-    fn prev_paragraph_from_start_of_para_jumps_to_previous_para_start() {
-        let mut ed = editor_at("line1\nline2\n\nline3\nline4", 3);
+    fn prev_paragraph_from_blank_skips_blanks_then_stops_at_prev_blank() {
+        // from blank, skip blanks back, skip para back, stop at prev blank
+        let mut ed = editor_at("line1\n\nline2\nline3\n\nline4", 4);
         ed.on_key(key(KeyCode::Char('{')));
-        assert_eq!(ed.body_state.cursor.row, 0);
+        assert_eq!(ed.body_state.cursor.row, 1);
     }
 
     #[test]
@@ -996,19 +1031,63 @@ mod tests {
     }
 
     #[test]
-    fn prev_paragraph_skips_multiple_blank_lines() {
-        let mut ed = editor_at("para1\n\n\n\npara2", 4);
+    fn prev_paragraph_multiple_jumps() {
+        // a(0) blank(1) b(2) blank(3) c(4)
+        let mut ed = editor_at("a\n\nb\n\nc", 4);
         ed.on_key(key(KeyCode::Char('{')));
-        assert_eq!(ed.body_state.cursor.row, 0);
+        assert_eq!(ed.body_state.cursor.row, 3); // second blank
+        ed.on_key(key(KeyCode::Char('{')));
+        assert_eq!(ed.body_state.cursor.row, 1); // first blank
+    }
+
+    // ── visual mode paragraph navigation ────────────────────────────────────
+
+    fn editor_visual_at(body: &str, anchor_row: usize, cursor_row: usize) -> Editor {
+        use edtui::actions::SwitchMode;
+        let draft = format!("To: \nSubject: \n--- body ---\n{body}");
+        let mut ed = Editor::new(&draft);
+        ed.focus = Focus::Body;
+        // Position at anchor, enter visual mode (sets selection.start = anchor).
+        ed.body_state.cursor = Index2::new(anchor_row, 0);
+        ed.body_state.execute(SwitchMode(EditorMode::Visual));
+        // Then move cursor to the starting position.
+        ed.body_state.cursor = Index2::new(cursor_row, 0);
+        if let Some(sel) = &mut ed.body_state.selection {
+            sel.end = ed.body_state.cursor;
+        }
+        ed
     }
 
     #[test]
-    fn prev_paragraph_multiple_jumps() {
-        let mut ed = editor_at("a\n\nb\n\nc", 4);
+    fn next_paragraph_in_visual_mode_moves_cursor() {
+        let mut ed = editor_visual_at("line1\nline2\n\nline3\nline4", 0, 0);
+        ed.on_key(key(KeyCode::Char('}')));
+        assert_eq!(ed.body_state.cursor.row, 2); // stops at blank line
+    }
+
+    #[test]
+    fn next_paragraph_in_visual_mode_extends_selection() {
+        let mut ed = editor_visual_at("line1\nline2\n\nline3\nline4", 0, 0);
+        ed.on_key(key(KeyCode::Char('}')));
+        let sel = ed.body_state.selection.unwrap();
+        assert_eq!(sel.start.row, 0);
+        assert_eq!(sel.end.row, 2);
+    }
+
+    #[test]
+    fn prev_paragraph_in_visual_mode_moves_cursor() {
+        let mut ed = editor_visual_at("line1\nline2\n\nline3\nline4", 4, 4);
         ed.on_key(key(KeyCode::Char('{')));
-        assert_eq!(ed.body_state.cursor.row, 2);
+        assert_eq!(ed.body_state.cursor.row, 2); // stops at blank line
+    }
+
+    #[test]
+    fn prev_paragraph_in_visual_mode_extends_selection() {
+        let mut ed = editor_visual_at("line1\nline2\n\nline3\nline4", 4, 4);
         ed.on_key(key(KeyCode::Char('{')));
-        assert_eq!(ed.body_state.cursor.row, 0);
+        let sel = ed.body_state.selection.unwrap();
+        assert_eq!(sel.start.row, 4);
+        assert_eq!(sel.end.row, 2);
     }
 
     // ── insert mode passthrough ──────────────────────────────────────────────
