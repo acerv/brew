@@ -165,7 +165,8 @@ impl Editor {
     }
 
     /// Handle a crossterm key event.
-    pub fn on_key(&mut self, key: crossterm::event::KeyEvent) {
+    /// Returns `true` if the caller should refresh autocomplete suggestions.
+    pub fn on_key(&mut self, key: crossterm::event::KeyEvent) -> bool {
         use crossterm::event::{KeyCode, KeyModifiers};
 
         // Ctrl+C → Normal mode (body) or do nothing (headers).
@@ -174,7 +175,7 @@ impl Editor {
                 self.body_state.mode = EditorMode::Normal;
             }
             self.suggestions.clear();
-            return;
+            return false;
         }
 
         // Autocomplete navigation when suggestions are showing.
@@ -183,19 +184,19 @@ impl Editor {
                 KeyCode::Down => {
                     self.ac_selected =
                         (self.ac_selected + 1).min(self.suggestions.len().saturating_sub(1));
-                    return;
+                    return false;
                 }
                 KeyCode::Up => {
                     self.ac_selected = self.ac_selected.saturating_sub(1);
-                    return;
+                    return false;
                 }
                 KeyCode::Enter => {
                     self.accept_suggestion();
-                    return;
+                    return false;
                 }
                 KeyCode::Esc => {
                     self.suggestions.clear();
-                    return;
+                    return false;
                 }
                 _ => {
                     self.suggestions.clear();
@@ -213,7 +214,7 @@ impl Editor {
                     Focus::Subject => Focus::Body,
                     Focus::Body => Focus::To,
                 };
-                return;
+                return false;
             }
         }
         if key.code == KeyCode::BackTab {
@@ -223,7 +224,7 @@ impl Editor {
                 Focus::Subject => Focus::Cc,
                 Focus::Body => Focus::Subject,
             };
-            return;
+            return false;
         }
 
         match self.focus {
@@ -239,11 +240,11 @@ impl Editor {
                     match key.code {
                         KeyCode::Char('}') => {
                             self.move_next_paragraph();
-                            return;
+                            return true;
                         }
                         KeyCode::Char('{') => {
                             self.move_prev_paragraph();
-                            return;
+                            return true;
                         }
                         _ => {}
                     }
@@ -251,6 +252,7 @@ impl Editor {
                 self.body_handler.on_key_event(key, &mut self.body_state);
             }
         }
+        true
     }
 
     fn is_blank_line(&self, row: usize) -> bool {

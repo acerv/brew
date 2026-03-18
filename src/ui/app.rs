@@ -344,8 +344,10 @@ impl App {
             match (key.modifiers, key.code) {
                 (KeyModifiers::CONTROL, KeyCode::Char('q')) => true,
                 _ => {
-                    ed.on_key(key);
-                    ed.update_autocomplete(&self.address_book);
+                    let refresh = ed.on_key(key);
+                    if refresh {
+                        ed.update_autocomplete(&self.address_book);
+                    }
                     false
                 }
             }
