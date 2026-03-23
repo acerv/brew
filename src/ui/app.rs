@@ -171,8 +171,14 @@ impl App {
                         last_sync = Instant::now();
                     }
                     Ok(Some(err)) => {
-                        // Failed
+                        // Failed - still refresh UI to show current state
                         self.status_error = Some(format!("sync: {}", err));
+                        for maildir in &mut self.maildirs {
+                            maildir.sync();
+                        }
+                        for tv in &mut self.threads {
+                            tv.invalidate();
+                        }
                         self.pending_sync = None;
                         last_sync = Instant::now();
                     }
