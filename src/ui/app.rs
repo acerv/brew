@@ -137,8 +137,9 @@ impl App {
                         // Success — snapshot counts before syncing
                         let counts_before: Vec<usize> =
                             self.maildirs.iter().map(|md| md.email_count()).collect();
+                        let mut total_failed = 0;
                         for maildir in &mut self.maildirs {
-                            maildir.sync();
+                            total_failed += maildir.sync();
                         }
                         for tv in &mut self.threads {
                             tv.invalidate();
@@ -166,18 +167,31 @@ impl App {
                                     .show();
                             }
                         }
-                        self.status_error = None;
+                        if total_failed > 0 {
+                            self.status_error =
+                                Some(format!("{} email(s) failed to load", total_failed));
+                        } else {
+                            self.status_error = None;
+                        }
                         self.pending_sync = None;
                         last_sync = Instant::now();
                     }
                     Ok(Some(err)) => {
                         // Failed - still refresh UI to show current state
-                        self.status_error = Some(format!("sync: {}", err));
+                        let mut total_failed = 0;
                         for maildir in &mut self.maildirs {
-                            maildir.sync();
+                            total_failed += maildir.sync();
                         }
                         for tv in &mut self.threads {
                             tv.invalidate();
+                        }
+                        if total_failed > 0 {
+                            self.status_error = Some(format!(
+                                "sync: {}; {} email(s) failed to load",
+                                err, total_failed
+                            ));
+                        } else {
+                            self.status_error = Some(format!("sync: {}", err));
                         }
                         self.pending_sync = None;
                         last_sync = Instant::now();
@@ -432,7 +446,7 @@ impl App {
                         if let Err(e) = md.write_email(&content) {
                             self.status_error = Some(e.to_string());
                         } else {
-                            md.sync();
+                            let _ = md.sync();
                             if let Some(tv) = self.threads.get_mut(idx) {
                                 tv.invalidate();
                             }
@@ -863,7 +877,7 @@ impl App {
         self.maildirs[self.current_mb].remove_by_id(&message_id);
         self.threads[self.current_mb].invalidate();
 
-        self.maildirs[target_mb_idx].sync();
+        let _ = self.maildirs[target_mb_idx].sync();
         self.threads[target_mb_idx].invalidate();
     }
 }

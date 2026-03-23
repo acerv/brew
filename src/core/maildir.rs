@@ -127,15 +127,18 @@ impl Maildir {
     /// the whole directory, only the one new file is processed.
     ///
     /// Remember to run `invalidate()` once the insert operations are completed.
-    pub fn insert(&mut self, path: &Path) {
+    pub fn insert(&mut self, path: &Path) -> bool {
         let email = match Email::from_file(&path.to_path_buf()) {
             Ok(e) => e,
-            Err(_) => return,
+            Err(e) => {
+                eprintln!("brew: failed to load {}: {}", path.display(), e);
+                return false;
+            }
         };
 
         // Skip if we already know this Message-ID (duplicate file).
         if self.lookup.contains_key(&email.message_id) {
-            return;
+            return true;
         }
 
         let reply_to = &email.reply_to.clone();
@@ -167,6 +170,7 @@ impl Maildir {
         // Step 4: register this message.
         self.lookup
             .insert(thread.parent.message_id.clone(), thread.clone());
+        true
     }
 
     /// Validate `content` as a well-formed RFC 2822 email and write it into
@@ -243,7 +247,9 @@ impl Maildir {
     /// A single `invalidate()` is called at the end to promote orphans and
     /// re-sort the full tree.  This method is idempotent: calling it when
     /// nothing has changed on disk is a no-op (aside from the sort pass).
-    pub fn sync(&mut self) {
+    /// Sync the in-memory state with disk. Returns the number of emails that
+    /// failed to load (e.g., corrupt files, missing Message-ID).
+    pub fn sync(&mut self) -> usize {
         let disk: HashSet<PathBuf> = Maildir::iter_maildir(Path::new(&self.dir)).collect();
 
         // First pass: remove emails that disappeared from disk.  Removing a
@@ -265,11 +271,15 @@ impl Maildir {
             .values()
             .map(|t| t.parent.path().clone())
             .collect();
+        let mut failed = 0;
         for arrived in disk.difference(&known_after) {
-            self.insert(arrived);
+            if !self.insert(arrived) {
+                failed += 1;
+            }
         }
 
         self.invalidate();
+        failed
     }
 
     /// Set the sort order and re-sort immediately.
