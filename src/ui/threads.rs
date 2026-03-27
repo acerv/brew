@@ -152,6 +152,63 @@ impl ThreadsView {
     }
 }
 
+/// Build a single `ListItem` for a thread row.
+fn build_row_item(row: &Row, subject_w: usize) -> ListItem<'static> {
+    const FROM_W: usize = 27;
+    const DATE_W: usize = 16;
+
+    let e = &row.thread.parent;
+    let from = utils::fit_string(e.from.short(), FROM_W);
+    let indent = if row.depth == 0 {
+        String::new()
+    } else {
+        format!("{}└ ", "  ".repeat(row.depth - 1))
+    };
+    let subject = if e.subject.is_empty() {
+        "(no subject)".to_string()
+    } else {
+        e.subject.clone()
+    };
+    let subject_avail = subject_w.saturating_sub(indent.chars().count());
+    let subject_padded = utils::fit_string(&subject, subject_avail);
+    let text_style = if e.is_unread() {
+        Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+    let flagged_span = if e.has_mark(Flag::Flagged) {
+        Span::styled("★", Style::default().fg(Color::Yellow))
+    } else {
+        Span::raw(" ")
+    };
+    let replied_span = if e.has_mark(Flag::Replied) {
+        Span::styled("↩", Style::default().fg(Color::Yellow))
+    } else {
+        Span::raw(" ")
+    };
+    let passed_span = if e.has_mark(Flag::Passed) {
+        Span::styled("→ ", Style::default().fg(Color::Yellow))
+    } else {
+        Span::raw("  ")
+    };
+    ListItem::new(Line::from(vec![
+        Span::styled(from, text_style),
+        Span::raw(" "),
+        Span::styled(indent, Style::default().fg(Color::DarkGray)),
+        Span::styled(subject_padded, text_style),
+        Span::raw(" "),
+        flagged_span,
+        replied_span,
+        passed_span,
+        Span::styled(
+            format!("{:<DATE_W$}", humanize_date(e.timestamp)),
+            Style::default().fg(Color::Cyan),
+        ),
+    ]))
+}
+
 /// Render the thread list into `area`.
 pub fn draw(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, view: &mut ThreadsView) {
     const FROM_W: usize = 27;
@@ -160,62 +217,35 @@ pub fn draw(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, view: &mut 
     let usable = area.width.saturating_sub(2) as usize;
     let subject_w = usable.saturating_sub(FROM_W + DATE_W + FLAGS_W + 2);
 
-    let items: Vec<ListItem> = view
-        .rows
+    let total = view.rows.len();
+    let height = area.height as usize;
+
+    if total == 0 || height == 0 {
+        let widget =
+            List::new(Vec::<ListItem>::new()).block(Block::default().borders(Borders::NONE));
+        frame.render_widget(widget, area);
+        return;
+    }
+
+    let selected = view.state.selected().unwrap_or(0);
+
+    // Adjust offset so the selected item is always visible.
+    let mut offset = view.state.offset();
+    if selected < offset {
+        offset = selected;
+    } else if selected >= offset + height {
+        offset = selected - height + 1;
+    }
+    *view.state.offset_mut() = offset;
+
+    let end = (offset + height).min(total);
+    let items: Vec<ListItem> = view.rows[offset..end]
         .iter()
-        .map(|row| {
-            let e = &row.thread.parent;
-            let from = utils::fit_string(e.from.short(), FROM_W);
-            let indent = if row.depth == 0 {
-                String::new()
-            } else {
-                format!("{}└ ", "  ".repeat(row.depth - 1))
-            };
-            let subject = if e.subject.is_empty() {
-                "(no subject)".to_string()
-            } else {
-                e.subject.clone()
-            };
-            let subject_avail = subject_w.saturating_sub(indent.chars().count());
-            let subject_padded = utils::fit_string(&subject, subject_avail);
-            let text_style = if row.thread.parent.is_unread() {
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-            let flagged_span = if e.has_mark(Flag::Flagged) {
-                Span::styled("★", Style::default().fg(Color::Yellow))
-            } else {
-                Span::raw(" ")
-            };
-            let replied_span = if e.has_mark(Flag::Replied) {
-                Span::styled("↩", Style::default().fg(Color::Yellow))
-            } else {
-                Span::raw(" ")
-            };
-            let passed_span = if e.has_mark(Flag::Passed) {
-                Span::styled("→ ", Style::default().fg(Color::Yellow))
-            } else {
-                Span::raw("  ")
-            };
-            ListItem::new(Line::from(vec![
-                Span::styled(from, text_style),
-                Span::raw(" "),
-                Span::styled(indent, Style::default().fg(Color::DarkGray)),
-                Span::styled(subject_padded, text_style),
-                Span::raw(" "),
-                flagged_span,
-                replied_span,
-                passed_span,
-                Span::styled(
-                    format!("{:<DATE_W$}", humanize_date(e.timestamp)),
-                    Style::default().fg(Color::Cyan),
-                ),
-            ]))
-        })
+        .map(|row| build_row_item(row, subject_w))
         .collect();
+
+    let mut visible_state = ListState::default();
+    visible_state.select(Some(selected - offset));
 
     let widget = List::new(items)
         .block(Block::default().borders(Borders::NONE))
@@ -227,7 +257,7 @@ pub fn draw(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, view: &mut 
         )
         .highlight_symbol("> ");
 
-    frame.render_stateful_widget(widget, area, &mut view.state);
+    frame.render_stateful_widget(widget, area, &mut visible_state);
 }
 
 fn flatten_recursive(threads: &[Rc<EmailThread>], depth: usize, out: &mut Vec<Row>) {
