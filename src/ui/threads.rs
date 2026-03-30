@@ -138,6 +138,11 @@ impl ThreadsView {
     pub fn toggle_unread(&mut self) {
         self.unread_only = !self.unread_only;
         self.invalidate();
+        // When toggling the filter, start from the top so the user sees all results.
+        if !self.rows.is_empty() {
+            self.state.select(Some(0));
+        }
+        *self.state.offset_mut() = 0;
     }
 
     /// Set or clear the subject search filter and refresh.
@@ -669,7 +674,7 @@ mod tests {
     }
 
     #[test]
-    fn show_unread_preserves_selection_when_selected_is_unread() {
+    fn show_unread_resets_to_first_after_toggle() {
         let mut view = ThreadsView::new(tlist(vec![
             thread("a", "Alice", "Read", false),
             thread("b", "Bob", "Unread", true),
@@ -678,17 +683,18 @@ mod tests {
         view.next_email(1);
         view.next_email(1); // select "c"
         view.toggle_unread();
-        assert_eq!(view.selected().unwrap().parent.message_id, "c");
+        // toggle always resets to first item so user sees all results
+        assert_eq!(view.selected().unwrap().parent.message_id, "b");
     }
 
     #[test]
-    fn show_unread_clamps_when_selected_is_read() {
+    fn show_unread_selects_first_when_selected_is_read() {
         let mut view = ThreadsView::new(tlist(vec![
             thread("a", "Alice", "Read", false),
             thread("b", "Bob", "Also read", false),
             thread("c", "Carol", "Unread", true),
         ]));
-        // select "a" (read) — after filtering, "a" disappears
+        // select "a" (read) — after filtering, selects first unread
         view.toggle_unread();
         assert_eq!(view.selected().unwrap().parent.message_id, "c");
     }
